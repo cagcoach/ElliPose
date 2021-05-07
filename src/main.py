@@ -14,12 +14,15 @@ import scipy.linalg
 import scipy.ndimage
 import matplotlib.pyplot
 import cvxpy as cp
+import torch
 
+from scipy.spatial.transform import Rotation
 
 from external.VideoPose3D.common.visualization import render_animation
+from src.Estimated3dDataset import Estimated3dDataset
 
 sys.path.append(os.path.abspath('external/VideoPose3D'))
-from external.VideoPose3D.common.camera import normalize_screen_coordinates
+from external.VideoPose3D.common.camera import normalize_screen_coordinates, camera_to_world
 from external.VideoPose3D.common.loss import mpjpe, n_mpjpe, p_mpjpe
 from external.VideoPose3D.common.h36m_dataset import Human36mDataset
 import cv2
@@ -28,7 +31,7 @@ import cv2
 from configparser import ConfigParser
 
 
-def bonelength(poses):
+def bonelength(poses, bonemat=None):
     '''
     HIP = 0
     R_HIP = 1
@@ -48,24 +51,24 @@ def bonelength(poses):
     R_ELBOW = 15
     R_WRIST = 16
     '''
-
+    if bonemat is None:
     #                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16
-    bonemat = np.array([[0, 1, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip
-                        [0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left upper leg
-                        [0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left lower leg
-                        [0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right upper leg
-                        [0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right lower leg
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0],  # shoulder
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0],  # left upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0],  # left lower arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0],  # right upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1],  # right lower arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0],  # nose-tophead
-                        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0, 0, 0, 0],  #shoulder mid-left
-                        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,-1, 0, 0],  # shoulder mid-right
-                        [1, 0, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-left
-                        [1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-right
-                        ]).transpose()
+        bonemat = np.array([[0, 1, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip
+                            [0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left upper leg
+                            [0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left lower leg
+                            [0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right upper leg
+                            [0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right lower leg
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0],  # shoulder
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0],  # left upper arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0],  # left lower arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0],  # right upper arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1],  # right lower arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0],  # nose-tophead
+                            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0, 0, 0, 0],  #shoulder mid-left
+                            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,-1, 0, 0],  # shoulder mid-right
+                            [1, 0, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-left
+                            [1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-right
+                            ]).transpose()
     dimensiondiff = (np.moveaxis(poses, 1, 2).reshape(-1,17) @ bonemat).reshape(-1,3,bonemat.shape[1])
     dimensiondiff = np.moveaxis(dimensiondiff, 1,2)
 
@@ -251,12 +254,12 @@ def points2Dto3D(points1, points2):
     res = cv2.triangulatePoints(P,P_,points1.transpose(),points2.transpose()).transpose()
     return res / res[:,3]
 
-def optimizeUsingMeanBoneLength(P,P_,prediction,bestEstimate = None):
+def optimizeUsingMeanBoneLength(P,P_,prediction,bestEstimate = None, bonemat=None):
     if bestEstimate is None:
         bestEstimate = prediction
 
 
-    bl, bonemat = bonelength(bestEstimate)
+    bl, bonemat = bonelength(bestEstimate, bonemat)
     meanbl = np.mean(bl, axis=0)
 
     target_bone = (np.moveaxis(bestEstimate, 1, 2).reshape(-1, 17) @ bonemat).reshape(-1, 3, bonemat.shape[1])
@@ -348,29 +351,72 @@ def main(argv):
         exit()
     config.read(sys.argv[1])
 
-    dataset = Human36mDataset(config.get("Human3.6m", "3D"))
+    #source = "HumanPose3D"
+    source = "NoTears"
 
-    poseset = "2D_cpn"
+    if source == "NoTears":
+        pass
+        #TODO!
 
-    keypoints2D = np.load(config.get("Human3.6m", poseset), allow_pickle=True)
-    keypoints = keypoints2D['positions_2d'].item()
+    if source ==  "humanPose3D":
+        dataset = Human36mDataset(config.get("Human3.6m", "3D"))
 
-    for subject in keypoints.keys():
-        for action in keypoints[subject]:
-            for cam_idx, kps in enumerate(keypoints[subject][action]):
-                cam = dataset.cameras()[subject][cam_idx]
-                kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
-                keypoints[subject][action][cam_idx] = kps
+        poseset = "2D_cpn"
 
-    kp1_ = dict()
-    kp2_ = dict()
-    gt_ = dict()
-    for k in keypoints["S1"].keys():
-        kp1_[k] = keypoints["S1"][k][0]
-        kp2_[k] = keypoints["S1"][k][1]
-        gt_[k] = dataset._data["S1"][k]["positions"]
-        c1 = dataset.cameras()["S1"][0]
-        c2 = dataset.cameras()["S1"][1]
+        keypoints2D = np.load(config.get("Human3.6m", poseset), allow_pickle=True)
+        keypoints = keypoints2D['positions_2d'].item()
+
+        bonemat = np.array([[0, 1, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip
+                            [0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left upper leg
+                            [0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left lower leg
+                            [0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right upper leg
+                            [0, 0, 1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right lower leg
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0],  # shoulder
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0],  # left upper arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1, 0, 0, 0],  # left lower arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1, 0],  # right upper arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1],  # right lower arm
+                            [0, 0, 0, 0, 0, 0, 0, 0, 0, 1, -1, 0, 0, 0, 0, 0, 0],  # nose-tophead
+                            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, -1, 0, 0, 0, 0, 0],  # shoulder mid-left
+                            [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, -1, 0, 0],  # shoulder mid-right
+                            [1, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-left
+                            [1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-right
+                            ]).transpose()
+
+
+
+        for subject in keypoints.keys():
+            for action in keypoints[subject]:
+                for cam_idx, kps in enumerate(keypoints[subject][action]):
+                    cam = dataset.cameras()[subject][cam_idx]
+                    kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
+                    keypoints[subject][action][cam_idx] = kps
+
+        kp1_ = dict()
+        kp2_ = dict()
+        gt_ = dict()
+        c1 = dict()
+        c2 = dict()
+        subjects = list(dataset.subjects())
+        #subjects = ["S1",]
+
+        cam1_idx = 0
+        cam2_idx = 1
+        for s in subjects:
+            kp1_[s] = dict()
+            kp2_[s] = dict()
+            gt_[s] = dict()
+            c1[s] = dataset.cameras()["S1"][cam1_idx]
+            c2[s] = dataset.cameras()["S1"][cam2_idx]
+
+            #c1[s]["center"][1] *= -1
+
+            for k in keypoints[s].keys():
+                kp1_[s][k] = keypoints[s][k][cam1_idx]
+                kp2_[s][k] = keypoints[s][k][cam2_idx]
+                gt_[s][k] = dataset._data[s][k]["positions"]
+                #kp1_[s][k][:,:,1] *= -1
+                #kp2_[s][k][:,:,1] *= -1
 
     def estimateForKeypoint(var):
         kp1 = var[0]
@@ -379,6 +425,7 @@ def main(argv):
         c1 = var[3]
         c2 = var[4]
         k = var[5]
+        s = var[6]
         #kp1 = keypoints["S1"][k][0]
         #kp2 = keypoints["S1"][k][1]
         #gt = dataset._data["S1"][k]["positions"]
@@ -445,13 +492,13 @@ def main(argv):
                                   [0, 0, 1]])
 
         E=cv2.findEssentialMat(kp1, kp2, cameraMatrix1=cameraMatrix1, cameraMatrix2=cameraMatrix2, distCoeffs1=None,
-                            distCoeffs2=None, method=cv2.RANSAC, prob=0.5, threshold=0.0001)
+                            distCoeffs2=None, method=cv2.RANSAC, prob=0.99, threshold=0.0001)
         #E = cv2.findEssentialMat(kp1, kp2)
 
         #fundmat = cv2.findFundamentalMat(kp1,kp2,cv2.FM_RANSAC, ransacReprojThreshold=0.0001, confidence=0.999)
 
 
-        retval, R, t, mask, triangulatedPoints = cv2.recoverPose(E[0], kp1, kp2, cameraMatrix=cameraMatrix1, distanceThresh=10);
+        retval, R, t, mask, triangulatedPoints = cv2.recoverPose(E[0], kp1, kp2, cameraMatrix=cameraMatrix1, distanceThresh=1000);
 
         triangulatedPoints /= triangulatedPoints[3,:]
 
@@ -461,29 +508,41 @@ def main(argv):
 
         P_= cameraMatrix2 @ np.append(R,t,axis=1)
 
+        realCameraDist = np.linalg.norm(c1["translation"]-c2["translation"])
+
+
+
 
         prediction = triangulatedPoints.transpose()[:, :3].reshape(-1, 17, 3)
+
+        #prediction = (prediction @ realCamera1Rot * realCameraDist/np.linalg.norm(t)) + realCamera1Trans
+
         print("P-MPJPE: {} {:.2f} mm ({} frames)".format(k,
-                                                         p_mpjpe((prediction[:, :, :]) * np.array([1, 1, 1]),
+                                                         p_mpjpe((prediction[:, :, :].copy()) * np.array([1, 1, 1]),
                                                                  (gt[:, :, :])) * 1000, gt.shape[0]))
         newprediction = np.copy(prediction)
-        for i in range(5):
-            newprediction = optimizeUsingMeanBoneLength(P,P_,prediction, bestEstimate=newprediction)
+
+        for i in range(1):
+            newprediction = optimizeUsingMeanBoneLength(P,P_,prediction, bestEstimate=newprediction, bonemat=bonemat)
             print("P-MPJPE: {} {:.2f} mm ({} frames)".format(k,
                                                          p_mpjpe((newprediction[:, :, :]) * np.array([1, 1, 1]),
                                                                  (gt[:, :, :])) * 1000, gt.shape[0]))
+            print("MPJPE: {} {:.2f} mm ({} frames)".format(k, mpjpe(
+                (torch.from_numpy((newprediction[:, :, :]) * np.array([1, 1, 1]))),
+                (gt[:, :, :])) * 1000, gt.shape[0]))
 
 
+        prediction = camera_to_world((prediction.reshape(-1,3) * realCameraDist),c1["orientation"].astype(float),c1["translation"]).reshape(-1,17,3)
+        newprediction = camera_to_world((newprediction.reshape(-1,3) * realCameraDist),c1["orientation"].astype(float),c1["translation"]).reshape(-1,17,3)
         al_prediction = align(prediction,gt)
         n_prediction = align(newprediction,gt)
 
-
         #print("### GT ###")
-        gt_length, _ = bonelength(gt)
+        gt_length, _ = bonelength(gt, bonemat)
         #print("### Prediction ###")
-        pred_length, _ = bonelength(al_prediction)
+        pred_length, _ = bonelength(prediction, bonemat)
 
-        new_length, _ = bonelength(n_prediction)
+        new_length, _ = bonelength(newprediction, bonemat)
 
         np.set_printoptions(precision=3, linewidth = 300)
         print("MEAN:")
@@ -504,7 +563,7 @@ def main(argv):
 
         gtmean = np.mean(gt_length, axis=0)
 
-        if(False):
+        if(True):
             matplotlib.use("TKAgg")
             fig, ax1 = matplotlib.pyplot.subplots()
             bins = np.linspace(gtmean[9]*0.8, gtmean[9]*1.2, 50)
@@ -517,6 +576,18 @@ def main(argv):
             matplotlib.pyplot.legend(loc='upper right')
             matplotlib.pyplot.show()
 
+            matplotlib.use("TKAgg")
+            fig = matplotlib.pyplot.figure()
+            ax2 = fig.add_subplot(111, projection="3d")
+            ax2.scatter(prediction[:, 16, 0] - prediction[:, 15, 0]-(np.linalg.norm(gt[:, 16, 0] - gt[:, 15, 0]) * (prediction[:, 16, 0] - prediction[:, 15, 0]) / np.linalg.norm(prediction[:, 16, 0] - prediction[:, 15, 0])),
+                        prediction[:, 16, 1] - prediction[:, 15, 1]-(np.linalg.norm(gt[:, 16, 1] - gt[:, 15, 1]) * (prediction[:, 16, 1] - prediction[:, 15, 1]) / np.linalg.norm(prediction[:, 16, 1] - prediction[:, 15, 1])),
+                        prediction[:, 16, 2] - prediction[:, 15, 2]-(np.linalg.norm(gt[:, 16, 2] - gt[:, 15, 2]) * (prediction[:, 16, 2] - prediction[:, 15, 2]) / np.linalg.norm(prediction[:, 16, 2] - prediction[:, 15, 2])))
+            matplotlib.pyplot.xlim([-0.5, 0.5])
+            matplotlib.pyplot.ylim([-0.5, 0.5])
+            ax2.set_zlim([-0.5, 0.5])
+            matplotlib.pyplot.show()
+
+
         '''
         print("P-MPJPE: {} {:.2f} mm ({} frames)".format(k,
             p_mpjpe((prediction[:, :, :]) * np.array([1, 1, 1]), (gt[:, :, :])) * 1000,gt.shape[0]))
@@ -525,19 +596,26 @@ def main(argv):
                                                          p_mpjpe((newprediction[:, :, :]) * np.array([1, 1, 1]),
                                                                  (gt[:, :, :])) * 1000, gt.shape[0]))
         '''
-        return prediction, newprediction, gt, k
+        return prediction, newprediction, gt, k, s, P, P_
         #break; #FIXME Debug out
 
     #for k in  keypoints["S1"].keys():
     #    estimateForKeypoint(k)
 
+    estimatorInput = list()
+    for s in subjects:
+        for k in keypoints[s].keys():
+            estimatorInput.append([kp1_[s][k], kp2_[s][k], gt_[s][k], c1[s], c2[s], k, s])
 
+    if (False): #multiprocessing
+        with Pool(20) as p:
+            estimatorOutput = p.map(estimateForKeypoint,estimatorInput)
+    else:
+        estimatorOutput = list()
+        for ei in estimatorInput:
+            estimatorOutput.append(estimateForKeypoint(ei))
 
-    with Pool(20) as p:
-        val = [[kp1_[k],kp2_[k],gt_[k],c1,c2,k] for k in keypoints["S1"].keys()]
-        ret = p.map(estimateForKeypoint,val)
-
-    for prediction, newprediction, gt, k in ret:
+    for prediction, newprediction, gt, k, s, P, P_ in estimatorOutput:
         print("P-MPJPE: {} {:.2f} mm ({} frames)".format(k,
                                                          p_mpjpe((prediction[:, :, :]) * np.array([1, 1, 1]),
                                                                  (gt[:, :, :])) * 1000, gt.shape[0]))
@@ -566,8 +644,8 @@ def main(argv):
 
 
 
-    kp3d = dataset._data["S1"]["Directions"]["positions"].reshape(-1,3)
-
+    e3d = Estimated3dDataset(estimatorInput, estimatorOutput,dataset._skeleton)
+    np.savez_compressed("3D-Estimation"+poseset, positions_3d=e3d._data)
     #print(retval)
 
 
