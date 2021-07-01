@@ -33,5 +33,8 @@ class Estimated3dDataset(MocapDataset):
             if not s in self._cameras:
                 self._cameras[s] = [c1,c2]
             self._data[s][k] = {
-                "positions": newprediction
+                "positions": prediction,
+                "positions_aligned": newprediction,
+                "P1" : P,
+                "P2" : P_,
             }
