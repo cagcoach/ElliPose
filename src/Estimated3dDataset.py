@@ -2,7 +2,7 @@ from external.VideoPose3D.common.mocap_dataset import MocapDataset
 
 
 class Estimated3dDataset(MocapDataset):
-    def __init__(self, estimatorInput, estimatorOutput,skeleton):
+    def __init__(self, estimatorInput, estimatorOutput):
         super().__init__(fps=50,skeleton=skeleton)
         assert len(estimatorInput) == len(estimatorOutput)
 

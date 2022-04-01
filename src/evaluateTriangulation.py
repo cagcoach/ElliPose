@@ -1,4 +1,7 @@
+import os
+from collections import defaultdict, OrderedDict
 from configparser import ConfigParser
+#from src.Skeleton.Bonemat import Bonemat
 import sys
 
 import numpy as np
@@ -6,267 +9,769 @@ import torch
 
 import matplotlib.pyplot as plt
 import matplotlib
+from cv2 import applyColorMap, COLORMAP_JET as COLORMAP
 
 from external.VideoPose3D.common.camera import normalize_screen_coordinates, camera_to_world
 from external.VideoPose3D.common.h36m_dataset import Human36mDataset
 from external.VideoPose3D.common.loss import mpjpe, p_mpjpe
+from src.DataInterface.Human36mGT import Human36mGT
+from src.DataInterface.Human36mGT2D import Human36mGT2D
+from src.DataInterface.NoTears import NoTears
+from src.DataInterface.PickleFolder import PickleFolder
+from src.DataInterface.Sequence import NpDimension
 from src.h36m_noTears import Human36mNoTears
+from src.Skeleton.Keypoint import Dimension as KpDim, Feature, Keypoint, Position
+#from multiprocessing import Pool
+from pathos.multiprocessing import ProcessingPool as Pool
 
-matplotlib.use("TkAgg")
+import easygui
 
-config = ConfigParser()
-if len(sys.argv) != 2:
-    print("Wrong number of arguments")
-    exit()
-config.read(sys.argv[1])
 
-source = "Human3.6m"
+def numbercellstyle(val, min_, max_):
+    changedval = (val - min_)/(max_-min_) * 127
+    bgcolor = applyColorMap(np.array(128 + min(changedval, 127)).astype(np.uint8), COLORMAP)
 
-dataset = Human36mDataset(config.get(source, "3D"))
+    textcolor = "fff" if (bgcolor[0,0,2] * 0.2126) + (bgcolor[0,0,1] * 0.7152) + (bgcolor[0,0,0] * 0.0722) < 127 else "000"
 
-if source == "NoTears":
+    hexbgcolor = bgcolor[0, 0, 0] + 0x100 * bgcolor[0, 0, 1] + 0x10000 * bgcolor[0, 0, 2]
+    return "background-color:#{:06x};color:#{};text-align:right".format(hexbgcolor,textcolor)
 
-    poseset = "2D"
-                #0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16
-    bonemat = np.array([[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0],  # hip
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,-1, 0, 0, 0],  # left upper leg
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,-1, 0],  # left lower leg
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,-1, 0, 0],  # right upper leg
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0,-1],  # right lower leg
-                        [0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # shoulder
-                        [0, 0, 0, 0, 0, 1, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 1, 0,-1, 0, 0, 0, 0, 0, 0, 0],  # left lower arm
-                        [0, 0, 0, 0, 0, 0, 1, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0],  # right upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0,-1, 0, 0, 0, 0, 0, 0],  # right lower arm
-                        [1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # nose-lefteye
-                        [1, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # nose-righteye
-                        [1, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # nose-leftear
-                        [1, 0, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # nose-rightear
-                        [0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # lefteye-righteye
-                        [0, 1, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # lefteye-leftear
-                        [0, 1, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # lefteye-rightear
-                        [0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # righteye-leftear
-                        [0, 0, 1, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # righteye-rightear
-                        [0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # leftear-rightear
-                        ]).transpose()
+def align(predicted, target):
+    """
+    rigid alignment (scale, rotation, and translation),
+    often referred to as "Protocol #2" in many papers.
+    """
+    assert predicted.shape == target.shape
 
-    keypoints = Human36mNoTears(config.get(source, poseset))._data
-    accuracies = dict()
-    for subject in keypoints.keys():
-        for action in keypoints[subject]:
-            for cam_idx, kps in enumerate(keypoints[subject][action]["positions"]):
-                if kps is None:
-                    continue
-                cam = dataset.cameras()[subject][cam_idx]
-                kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
-                keypoints[subject][action][cam_idx] = kps
-            if not subject in accuracies:
-                accuracies[subject] = dict()
-            if not action in accuracies[subject]:
-                accuracies[subject][action] = dict()
+    muX = np.nanmean(target, axis=1, keepdims=True)
+    muY = np.nanmean(predicted, axis=1, keepdims=True)
 
-            for cam_idx, acc in enumerate(keypoints[subject][action]["accuracy"]):
-                if acc is None:
-                    continue
-                accuracies[subject][action][cam_idx] = acc
+    X0 = target - muX
+    Y0 = predicted - muY
 
-    kp1_ = dict()
-    kp2_ = dict()
-    gt_ = dict()
-    c1 = dict()
-    c2 = dict()
-    subjects = list(keypoints.keys())
+    normX = np.sqrt(np.nansum(X0 ** 2, axis=(1, 2), keepdims=True))
+    normY = np.sqrt(np.nansum(Y0 ** 2, axis=(1, 2), keepdims=True))
 
-    cam1_idx = 0
-    cam2_idx = 1
+    X0 /= normX
+    Y0 /= normY
 
-    for s in subjects:
-        kp1_[s] = dict()
-        kp2_[s] = dict()
-        gt_[s] = dict()
-        c1[s] = dataset.cameras()[s][cam1_idx]
-        c2[s] = dataset.cameras()[s][cam2_idx]
+    H = np.matmul(X0.transpose(0, 2, 1), Y0)
+    Hmask = ~np.isnan(H).all(axis=2).all(axis=1)
+    U_, s_, Vt_ = np.linalg.svd(H[Hmask])
+    U = np.empty(H.shape)
+    s = np.empty(H.shape[:2])
+    Vt = np.empty(H.shape)
+    U[Hmask] = U_
+    U[~Hmask] = np.nan
+    s[Hmask] = s_
+    s[~Hmask] = np.nan
+    Vt[Hmask] = Vt_
+    Vt[~Hmask] = np.nan
 
-        for k in keypoints[s].keys():
-            if cam1_idx in keypoints[s][k] and cam2_idx in keypoints[s][k]:
+    V = Vt.transpose(0, 2, 1)
+    R = np.matmul(V, U.transpose(0, 2, 1))
+
+    # Avoid improper rotations (reflections), i.e. rotations with det(R) = -1
+    sign_detR = np.sign(np.expand_dims(np.linalg.det(R), axis=1))
+    V[:, :, -1] *= sign_detR
+    s[:, -1] *= sign_detR.flatten()
+    R = np.matmul(V, U.transpose(0, 2, 1))  # Rotation
+
+    tr = np.expand_dims(np.sum(s, axis=1, keepdims=True), axis=2)
+
+    a = tr * normX / normY  # Scale
+    t = muX - a * np.matmul(muY, R)  # Translation
+
+    # Perform rigid transformation on the input
+    predicted_aligned = a * np.matmul(predicted, R) + t
+
+    # Return MPJPE
+    return predicted_aligned
+
+def main(conf):
+    matplotlib.use("TkAgg")
+
+    config = ConfigParser()
+
+    config.read(conf)
+
+
+    human36mGT = Human36mGT(config)
+
+    source = config["exec"]["source"]
+
+    #dataset = Human36mDataset(config.get(source, "3D"))
+
+    '''
+    if source ==  "Human3.6m" or source == "Detectron":
+    
+        poseset = "2D_gt"
+    
+        keypoints2D = np.load(config.get(source, poseset), allow_pickle=True)
+        keypoints = keypoints2D['positions_2d'].item()
+    
+        #                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16
+        bonemat = Bonemat.get("coco").transpose()
+    
+        for subject in keypoints.keys():
+            for action in keypoints[subject]:
+                for cam_idx, kps in enumerate(keypoints[subject][action]):
+                    cam = dataset.cameras()[subject][cam_idx]
+                    kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
+                    keypoints[subject][action][cam_idx] = kps
+    
+        kp1_ = dict()
+        kp2_ = dict()
+        gt_ = dict()
+        c1 = dict()
+        c2 = dict()
+        subjects = list(dataset.subjects())
+    
+        cam1_idx = 0
+        cam2_idx = 1
+        for s in subjects:
+            kp1_[s] = dict()
+            kp2_[s] = dict()
+            gt_[s] = dict()
+            c1[s] = dataset.cameras()[s][cam1_idx]
+            c2[s] = dataset.cameras()[s][cam2_idx]
+    
+            for k in keypoints[s].keys():
                 kp1_[s][k] = np.array(keypoints[s][k][cam1_idx])
                 kp2_[s][k] = np.array(keypoints[s][k][cam2_idx])
-                try:
-                    gt_[s][k] = np.array(dataset._data[s][k]["positions"])
-                    gt_[s][k][:,0] = np.nan
-                    gt_[s][k] = gt_[s][k][:,(9,0,0,0,0,14,11,15,12,16,13,1,4,2,5,3,6),:]
-                except:
-                    print("GT values for {} {} do not exist".format(s,k))
-                    gt_[s][k] = None
+                gt_[s][k] =  np.array(dataset._data[s][k]["positions"])
+    
+    '''
 
-if source ==  "Human3.6m":
+    a = PickleFolder(config, "aligned3d")
+    htmlhead = "<head><title>{}</title></head>".format(config["exec"]["outpath"])
+    htmlbody = "<h1>{}</h1>cameras {} and {}, {} ellipse iteration, {} bonelength iterations, blur: {}".format(config["exec"]["source"], config["exec"]["cameraindex1"], config["exec"]["cameraindex2"], config["exec"]["iterellipse"], config["exec"]["iterbone"], config["exec"]["blur"])
+    p_ck30 = dict()
+    p_ck50 = dict()
+    p_ck100 = dict()
+    p_ck250 = dict()
 
-    poseset = "2D_gt"
+    ck30 = dict()
+    ck50 = dict()
+    ck100 = dict()
+    ck250 = dict()
 
-    keypoints2D = np.load(config.get(source, poseset), allow_pickle=True)
-    keypoints = keypoints2D['positions_2d'].item()
+    #3D-Estimation_Human3.6m_2D_gt
+    notears = False
+    detectron = True
 
-    #                    0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16
-    bonemat = np.array([[0, 1, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip
-                        [0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left upper leg
-                        [0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # left lower leg
-                        [0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right upper leg
-                        [0, 0, 1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # right lower leg
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0],  # shoulder
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0],  # left upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0],  # left lower arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0],  # right upper arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1],  # right lower arm
-                        [0, 0, 0, 0, 0, 0, 0, 0, 0, 1,-1, 0, 0, 0, 0, 0, 0],  # nose-tophead
-                        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,-1, 0, 0, 0, 0, 0],  # shoulder mid-left
-                        [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0,-1, 0, 0],  # shoulder mid-right
-                        [1, 0, 0, 0,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-left
-                        [1,-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],  # hip mid-right
-                        ]).transpose()
+    outA = ""
+    outB = ""
+    mpjpehtml = defaultdict(lambda:dict())#"<tr><td>subject</td><td>action</td><td>MPJPE</td><td>PMPJPE</td><td>frames</td></tr>"
+    mydata = defaultdict(lambda:defaultdict(lambda:dict()))
+    mpjpehtmlhead = "<td>MPJPE</td><td>PMPJPE</td><td>frames</td>"
 
-    for subject in keypoints.keys():
-        for action in keypoints[subject]:
-            for cam_idx, kps in enumerate(keypoints[subject][action]):
-                cam = dataset.cameras()[subject][cam_idx]
-                kps[..., :2] = normalize_screen_coordinates(kps[..., :2], w=cam['res_w'], h=cam['res_h'])
-                keypoints[subject][action][cam_idx] = kps
+    keys = a.subject_list
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        p_ck30[subject_] = dict()
+        p_ck50[subject_] = dict()
+        p_ck100[subject_] = dict()
+        p_ck250[subject_] = dict()
 
-    kp1_ = dict()
-    kp2_ = dict()
-    gt_ = dict()
-    c1 = dict()
-    c2 = dict()
-    subjects = list(dataset.subjects())
+        ck30[subject_] = dict()
+        ck50[subject_] = dict()
+        ck100[subject_] = dict()
+        ck250[subject_] = dict()
+        mpjpehtml[subject_] = dict()
+        mydata[subject_] = defaultdict(lambda:dict())
 
-    cam1_idx = 0
-    cam2_idx = 1
-    for s in subjects:
-        kp1_[s] = dict()
-        kp2_[s] = dict()
-        gt_[s] = dict()
-        c1[s] = dataset.cameras()[s][cam1_idx]
-        c2[s] = dataset.cameras()[s][cam2_idx]
-
-        for k in keypoints[s].keys():
-            kp1_[s][k] = np.array(keypoints[s][k][cam1_idx])
-            kp2_[s][k] = np.array(keypoints[s][k][cam2_idx])
-            gt_[s][k] =  np.array(dataset._data[s][k]["positions"])
-
-a = np.load("3D-Estimation_Human3.6m_2D_cpn.npz", allow_pickle=True)
-
-#3D-Estimation_Human3.6m_2D_gt
-notears = False
-
-predictions = a["positions_3d"].item()
-
-if notears:
-    for k in predictions.keys():
-        for person, prediction in predictions[k].items():
-            gt_[k][person] = gt_[k][person][:prediction["positions_aligned"].shape[0] * 5:5,
-            #gt_[k][person] = gt_[k][person][:,
-                                      (9, 14, 15, 16, 11, 12, 13, 1, 2, 3, 4, 5, 6), :]
-            prediction["positions_aligned"] = prediction["positions_aligned"][:, (0, 6, 8, 10, 5, 7, 9, 12, 14, 16, 11, 13, 15), :]
-
-keys = list(predictions.keys())
-keys.sort(key=lambda x: int(x[1:]))
-for k in keys:
-    items = list(predictions[k].items())
-    items.sort(key=lambda x: x[0])
-    for person, prediction in items:
-        gt = gt_[k][person]
-        print("P-MPJPE;{};{};{:.2f};mm;{};frames".format(k, person,
-                                                         p_mpjpe(
-                                                             (prediction["positions_aligned"][:, :, :]) * np.array([1, 1, 1]),
-                                                             (gt[:, :, :])) * 1000, gt.shape[0]))
-
-print("####################################")
+        items = a.action_list(subject_)
+        items.sort(key=lambda x: x)
 
 
 
-keys = list(predictions.keys())
-keys.sort(key=lambda x: int(x[1:]))
-for k in keys:
-    items = list(predictions[k].items())
-    items.sort(key=lambda x: x[0])
-    for person, prediction in items:
-        gt = gt_[k][person]
-        prediction["positions_aligned"][prediction["positions_aligned"] > 1e20] = np.nan
-        prediction["positions_aligned"][prediction["positions_aligned"] <-1e20] = np.nan
-        print("MPJPE;{};{};{:.2f};mm;{};frames".format(k, person,
-                                                         mpjpe(torch.from_numpy(
-                                                             prediction["positions_aligned"][:, :, :]) * np.array([1, 1, 1]),
-                                                               (gt[:, :, :])) * 1000, gt.shape[0]))
+        #for action in items:
+            #for action, prediction in items:
+            #gt = gt_[subject_][action]
+        def process(action):
+            outdict = dict()
+            predseq = a.get_sequence(subject_,action)
+            predseq.interpolateCenterFromLeftRight(Feature.hip)
+            predseq.interpolateCenterFromLeftRight(Feature.shoulder)
+            gtseq = human36mGT.get_sequence(subject_,action)
+            #
+            keypoint_iter = list(set(predseq.npdimensions[NpDimension.KEYPOINT_ITER]).intersection(gtseq.npdimensions[NpDimension.KEYPOINT_ITER]))
+            keypoint_iter.sort(key=lambda x: (int(x != Keypoint(Position.center, Feature.hip))))
+            frame_iter = list(set(predseq.npdimensions[NpDimension.FRAME_ITER]).intersection(gtseq.npdimensions[NpDimension.FRAME_ITER]))
+            frame_iter.sort()
 
 
+            prediction, f = predseq.get(OrderedDict([(NpDimension.FRAME_ITER,frame_iter),
+                                                     (NpDimension.KEYPOINT_ITER,keypoint_iter),
+                                                     (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
+            gt, f_ = gtseq.get(OrderedDict([(NpDimension.FRAME_ITER, frame_iter),
+                                              (NpDimension.KEYPOINT_ITER, keypoint_iter),
+                                              (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
 
-fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
+            prediction[:,:] -= prediction[:,(0,)]
+            gt[:, :] -= gt[:, (0,)]
 
-predictions = a["positions_3d"].item()
+            thispmpjpe = p_mpjpe( prediction, gt ) * 1000
+            thismpjpe =  mpjpe(torch.from_numpy(prediction),gt) * 1000
 
-person = "S1"
-action = "Waiting 1"
-c1 = dataset.cameras()[person][0]
-c2 = dataset.cameras()[person][1]
+            #outA += ("P-MPJPE\t{}\t{}\t{:.2f}\tmm\t{}\tframes\n".format(subject_, action, thispmpjpe, gt.shape[0]))
+            #outhtmlPMPJPE += (
+            #    "<tr><td>{}</td><td>{}</td><td style=\"background-color:#{:06x}\">{:.2f} mm</td><td>{} frames</td></tr>".format(subject_, action, bgcolor, thispmpjpe, gt.shape[0]))
 
-P1 = camera_to_world(predictions[person][action]["P1"][None,:,3],c1["orientation"].astype(float),c1["translation"])
-P2 = camera_to_world(predictions[person][action]["P2"][None,:,3],c1["orientation"].astype(float),c1["translation"])
+            #outB += ("MPJPE\t{}\t{}\t{:.2f}\tmm\t{}\tframes\n".format(subject_, action, thismpjpe, gt.shape[0]))
+            outdict["mpjpehtml"] = "<td style=\"{}\">{:.2f} mm</td><td style=\"{}\">{:.2f} mm</td><td>{} frms</td>".format(
+                    numbercellstyle(thismpjpe, 0, 100), thismpjpe,numbercellstyle(thispmpjpe, 0, 80), thispmpjpe, gt.shape[0]
+                )
+            outdict["mpjpe"] = thismpjpe
+            outdict["pmpjpe"] = thispmpjpe
+            outdict["frames"] = gt.shape[0]
+            allPointsDist = np.linalg.norm(prediction - gt, axis=2).reshape(-1)
+
+            outdict["ck30sum"] =  (allPointsDist <= 0.03).sum()
+            outdict["ck50sum"] = (allPointsDist <= 0.05).sum()
+            outdict["ck100sum"] = (allPointsDist <= 0.1).sum()
+            outdict["ck150sum"] = (allPointsDist <= 0.15).sum()
+            outdict["ck250sum"] = (allPointsDist <= 0.25).sum()
+
+            allPointsDist = np.linalg.norm(align(prediction, gt) - gt, axis=2).reshape(-1)
+
+            outdict["p_ck30sum"] = (allPointsDist <= 0.03).sum()
+            outdict["p_ck50sum"] = (allPointsDist <= 0.05).sum()
+            outdict["p_ck100sum"] = (allPointsDist <= 0.1).sum()
+            outdict["p_ck150sum"] = (allPointsDist <= 0.15).sum()
+            outdict["p_ck250sum"] = (allPointsDist <= 0.25).sum()
+            outdict["totalpoints"] = len(allPointsDist)
+            print(subject_ + " " + action)
+            return outdict
+
+        with Pool(24) as p:
+            mydata[subject_] = defaultdict(lambda: dict(), **dict(zip(items,p.map(process,items))))
+
+        mydata[subject_]["TOTAL"]["mpjpe"] = np.mean([mydata[subject_][a]["mpjpe"] for a in items])
+        mydata[subject_]["TOTAL"]["pmpjpe"] = np.mean([mydata[subject_][a]["pmpjpe"] for a in items])
+    mydata["TOTAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in keys])
+    mydata["TOTAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in keys])
+    mydata["TOTALVAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in set(["S9","S11"]).intersection(keys)])
+
+    #htmlbody += "<h2>MPJPE</h2><table>{}</table>".format(outhtml)
+    print(outA)
+    print("####################################")
+    print(outB)
+    print("####################################")
+
+    tot = defaultdict(lambda: 0)
+    cnt = defaultdict(lambda: 0)
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    pck_table = "<tr>" \
+                "<td>subject</td>" \
+                "<td>action</td>"\
+                +mpjpehtmlhead+\
+                "<td>PCK<br />30</td>" \
+                "<td>PCK<br />50</td>" \
+                "<td>PCK<br />100</td>" \
+                "<td>PCK<br />150</td>" \
+                "<td>PCK<br />250</td>" \
+                "<td>PPCK<br />30</td>" \
+                "<td>PPCK<br />50</td>" \
+                "<td>PPCK<br />100</td>" \
+                "<td>PPCK<br />150</td>" \
+                "<td>PPCK<br />250</td>" \
+                "</tr>"
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            tot["PCK30"] += mydata[subject_][action]["ck30sum"]
+            tot["PCK50"] += mydata[subject_][action]["ck50sum"]
+            tot["PCK100"] += mydata[subject_][action]["ck100sum"]
+            tot["PCK150"] += mydata[subject_][action]["ck150sum"]
+            tot["PCK250"] += mydata[subject_][action]["ck250sum"]
+            tot["PPCK30"] += mydata[subject_][action]["p_ck30sum"]
+            tot["PPCK50"] += mydata[subject_][action]["p_ck50sum"]
+            tot["PPCK100"] += mydata[subject_][action]["p_ck100sum"]
+            tot["PPCK150"] += mydata[subject_][action]["p_ck150sum"]
+            tot["PPCK250"] += mydata[subject_][action]["p_ck250sum"]
+
+            cnt["PCK30"] += mydata[subject_][action]["totalpoints"]
+            cnt["PCK50"] += mydata[subject_][action]["totalpoints"]
+            cnt["PCK100"] += mydata[subject_][action]["totalpoints"]
+            cnt["PCK150"] += mydata[subject_][action]["totalpoints"]
+            cnt["PCK250"] += mydata[subject_][action]["totalpoints"]
+            cnt["PPCK30"] += mydata[subject_][action]["totalpoints"]
+            cnt["PPCK50"] += mydata[subject_][action]["totalpoints"]
+            cnt["PPCK100"] += mydata[subject_][action]["totalpoints"]
+            cnt["PPCK150"] += mydata[subject_][action]["totalpoints"]
+            cnt["PPCK250"] += mydata[subject_][action]["totalpoints"]
+
+            mydata[subject_][action]["pck30"] = mydata[subject_][action]["ck30sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["pck50"] = mydata[subject_][action]["ck50sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["pck100"] = mydata[subject_][action]["ck100sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["pck150"] = mydata[subject_][action]["ck150sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["pck250"] = mydata[subject_][action]["ck250sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["p_pck30"] = mydata[subject_][action]["p_ck30sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["p_pck50"] = mydata[subject_][action]["p_ck50sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["p_pck100"] = mydata[subject_][action]["p_ck100sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["p_pck150"] = mydata[subject_][action]["p_ck150sum"] / mydata[subject_][action]["totalpoints"]
+            mydata[subject_][action]["p_pck250"] = mydata[subject_][action]["p_ck250sum"] / mydata[subject_][action]["totalpoints"]
+
+            pck_table += "<tr>" \
+                         "<td style=\"font-weight:bold\">{}</td>" \
+                         "<td style=\"font-weight:bold\">{}</td>" \
+                         "{}" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "<td style=\"{}\">{:.2f}</td>" \
+                         "</tr>".format(
+                subject_,
+                action,
+                mydata[subject_][action]["mpjpehtml"],
+                numbercellstyle(mydata[subject_][action]["pck30"], 1, 0),
+                mydata[subject_][action]["pck30"] * 100,
+                numbercellstyle(mydata[subject_][action]["pck50"], 1, 0.2),
+                mydata[subject_][action]["pck50"] * 100,
+                numbercellstyle(mydata[subject_][action]["pck100"], 1, 0.6),
+                mydata[subject_][action]["pck100"] * 100,
+                numbercellstyle(mydata[subject_][action]["pck150"], 1, 0.8),
+                mydata[subject_][action]["pck150"] * 100,
+                numbercellstyle(mydata[subject_][action]["pck250"], 1, 0.9),
+                mydata[subject_][action]["pck250"] * 100,
+                numbercellstyle(mydata[subject_][action]["p_pck30"], 1, 0),
+                mydata[subject_][action]["p_pck30"] * 100,
+                numbercellstyle(mydata[subject_][action]["p_pck50"], 1, 0.2),
+                mydata[subject_][action]["p_pck50"] * 100,
+                numbercellstyle(mydata[subject_][action]["p_pck100"], 1, 0.6),
+                mydata[subject_][action]["p_pck100"] * 100,
+                numbercellstyle(mydata[subject_][action]["p_pck150"], 1, 0.8),
+                mydata[subject_][action]["p_pck150"] * 100,
+                numbercellstyle(mydata[subject_][action]["p_pck250"], 1, 0.9),
+                mydata[subject_][action]["p_pck250"] * 100
+            )
+        mydata[subject_]["TOTAL"]["pck30"] = np.mean([mydata[subject_][a]["pck30"] for a in items])
+        mydata[subject_]["TOTAL"]["pck50"] = np.mean([mydata[subject_][a]["pck50"] for a in items])
+        mydata[subject_]["TOTAL"]["pck100"] = np.mean([mydata[subject_][a]["pck100"] for a in items])
+        mydata[subject_]["TOTAL"]["pck150"] = np.mean([mydata[subject_][a]["pck150"] for a in items])
+        mydata[subject_]["TOTAL"]["pck250"] = np.mean([mydata[subject_][a]["pck250"] for a in items])
+        mydata[subject_]["TOTAL"]["p_pck30"] = np.mean([mydata[subject_][a]["p_pck30"] for a in items])
+        mydata[subject_]["TOTAL"]["p_pck50"] = np.mean([mydata[subject_][a]["p_pck50"] for a in items])
+        mydata[subject_]["TOTAL"]["p_pck100"] = np.mean([mydata[subject_][a]["p_pck100"] for a in items])
+        mydata[subject_]["TOTAL"]["p_pck150"] = np.mean([mydata[subject_][a]["p_pck150"] for a in items])
+        mydata[subject_]["TOTAL"]["p_pck250"] = np.mean([mydata[subject_][a]["p_pck250"] for a in items])
+    mydata["TOTAL"]["pck30"] = np.mean([mydata[s]["TOTAL"]["pck30"] for s in keys])
+    mydata["TOTAL"]["pck50"] = np.mean([mydata[s]["TOTAL"]["pck50"] for s in keys])
+    mydata["TOTAL"]["pck100"] = np.mean([mydata[s]["TOTAL"]["pck100"] for s in keys])
+    mydata["TOTAL"]["pck150"] = np.mean([mydata[s]["TOTAL"]["pck150"] for s in keys])
+    mydata["TOTAL"]["pck250"] = np.mean([mydata[s]["TOTAL"]["pck250"] for s in keys])
+    mydata["TOTAL"]["p_pck30"] = np.mean([mydata[s]["TOTAL"]["p_pck30"] for s in keys])
+    mydata["TOTAL"]["p_pck50"] = np.mean([mydata[s]["TOTAL"]["p_pck50"] for s in keys])
+    mydata["TOTAL"]["p_pck100"] = np.mean([mydata[s]["TOTAL"]["p_pck100"] for s in keys])
+    mydata["TOTAL"]["p_pck150"] = np.mean([mydata[s]["TOTAL"]["p_pck150"] for s in keys])
+    mydata["TOTAL"]["p_pck250"] = np.mean([mydata[s]["TOTAL"]["p_pck250"] for s in keys])
+    mydata["TOTALVAL"]["pck30"] = np.mean([mydata[s]["TOTAL"]["pck30"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["pck50"] = np.mean([mydata[s]["TOTAL"]["pck50"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["pck100"] = np.mean([mydata[s]["TOTAL"]["pck100"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["pck150"] = np.mean([mydata[s]["TOTAL"]["pck150"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["pck250"] = np.mean([mydata[s]["TOTAL"]["pck250"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["p_pck30"] = np.mean([mydata[s]["TOTAL"]["p_pck30"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["p_pck50"] = np.mean([mydata[s]["TOTAL"]["p_pck50"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["p_pck100"] = np.mean([mydata[s]["TOTAL"]["p_pck100"] for s in set(["S9","S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["p_pck150"] = np.mean([mydata[s]["TOTAL"]["p_pck150"] for s in set(["S9", "S11"]).intersection(keys)])
+    mydata["TOTALVAL"]["p_pck250"] = np.mean([mydata[s]["TOTAL"]["p_pck250"] for s in set(["S9","S11"]).intersection(keys)])
+
+    for subject_ in keys:
+        pck_table += "<tr style=\"background-color:#ddd;\">" \
+             "<td style=\"outline: 1px solid #ddd;font-weight:bold\">{}</td>" \
+             "<td style=\"outline: 1px solid #ddd;font-weight:bold\">TOTAL</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
+             "</tr>".format(
+            subject_,
+            numbercellstyle(mydata[subject_]["TOTAL"]["mpjpe"], 0, 100),
+            mydata[subject_]["TOTAL"]["mpjpe"],
+            numbercellstyle(mydata[subject_]["TOTAL"]["pmpjpe"], 0, 80),
+            mydata[subject_]["TOTAL"]["pmpjpe"],
+            "",
+            "",
+            numbercellstyle(mydata[subject_]["TOTAL"]["pck30"], 1, 0),
+            mydata[subject_]["TOTAL"]["pck30"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["pck50"], 1, 0.2),
+            mydata[subject_]["TOTAL"]["pck50"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["pck100"], 1, 0.6),
+            mydata[subject_]["TOTAL"]["pck100"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["pck150"], 1, 0.8),
+            mydata[subject_]["TOTAL"]["pck150"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["pck250"], 1, 0.9),
+            mydata[subject_]["TOTAL"]["pck250"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["p_pck30"], 1, 0),
+            mydata[subject_]["TOTAL"]["p_pck30"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["p_pck50"], 1, 0.2),
+            mydata[subject_]["TOTAL"]["p_pck50"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["p_pck100"], 1, 0.6),
+            mydata[subject_]["TOTAL"]["p_pck100"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["p_pck150"], 1, 0.8),
+            mydata[subject_]["TOTAL"]["p_pck150"] * 100,
+            numbercellstyle(mydata[subject_]["TOTAL"]["p_pck250"], 1, 0.9),
+            mydata[subject_]["TOTAL"]["p_pck250"] * 100,
+        )
+    pck_table += "<tr style=\"background-color:#bbb;\">" \
+         "<td style=\"outline: 1px solid #bbb;font-weight:bold\">S9,S11</td>" \
+         "<td style=\"outline: 1px solid #bbb;font-weight:bold\">TOTAL</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+         "</tr>".format(
+        numbercellstyle(mydata["TOTALVAL"]["mpjpe"], 0, 100),
+        mydata["TOTALVAL"]["mpjpe"],
+        numbercellstyle(mydata["TOTALVAL"]["pmpjpe"], 0, 80),
+        mydata["TOTALVAL"]["pmpjpe"],
+        "",
+        "",
+        numbercellstyle(mydata["TOTALVAL"]["pck30"], 1, 0),
+        mydata["TOTALVAL"]["pck30"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["pck50"], 1, 0.2),
+        mydata["TOTALVAL"]["pck50"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["pck100"], 1, 0.6),
+        mydata["TOTALVAL"]["pck100"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["pck150"], 1, 0.8),
+        mydata["TOTALVAL"]["pck150"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["pck250"], 1, 0.9),
+        mydata["TOTALVAL"]["pck250"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["p_pck30"], 1, 0),
+        mydata["TOTALVAL"]["p_pck30"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["p_pck50"], 1, 0.2),
+        mydata["TOTALVAL"]["p_pck50"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["p_pck100"], 1, 0.6),
+        mydata["TOTALVAL"]["p_pck100"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["p_pck150"], 1, 0.8),
+        mydata["TOTALVAL"]["p_pck150"] * 100,
+        numbercellstyle(mydata["TOTALVAL"]["p_pck250"], 1, 0.9),
+        mydata["TOTALVAL"]["p_pck250"] * 100,
+    )
+
+    pck_table += "<tr style=\"background-color:#bbb;\">" \
+                 "<td style=\"outline: 1px solid #bbb;font-weight:bold\">ALL</td>" \
+                 "<td style=\"outline: 1px solid #bbb;font-weight:bold\">TOTAL</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+                 "</tr>".format(
+        numbercellstyle(mydata["TOTAL"]["mpjpe"], 0, 100),
+        mydata["TOTAL"]["mpjpe"],
+        numbercellstyle(mydata["TOTAL"]["pmpjpe"], 0, 80),
+        mydata["TOTAL"]["pmpjpe"],
+        "",
+        "",
+        numbercellstyle(mydata["TOTAL"]["pck30"], 1, 0),
+        mydata["TOTAL"]["pck30"] * 100,
+        numbercellstyle(mydata["TOTAL"]["pck50"], 1, 0.2),
+        mydata["TOTAL"]["pck50"] * 100,
+        numbercellstyle(mydata["TOTAL"]["pck100"], 1, 0.6),
+        mydata["TOTAL"]["pck100"] * 100,
+        numbercellstyle(mydata["TOTAL"]["pck150"], 1, 0.8),
+        mydata["TOTAL"]["pck150"] * 100,
+        numbercellstyle(mydata["TOTAL"]["pck250"], 1, 0.9),
+        mydata["TOTAL"]["pck250"] * 100,
+        numbercellstyle(mydata["TOTAL"]["p_pck30"], 1, 0),
+        mydata["TOTAL"]["p_pck30"] * 100,
+        numbercellstyle(mydata["TOTAL"]["p_pck50"], 1, 0.2),
+        mydata["TOTAL"]["p_pck50"] * 100,
+        numbercellstyle(mydata["TOTAL"]["p_pck100"], 1, 0.6),
+        mydata["TOTAL"]["p_pck100"] * 100,
+        numbercellstyle(mydata["TOTAL"]["p_pck150"], 1, 0.8),
+        mydata["TOTAL"]["p_pck150"] * 100,
+        numbercellstyle(mydata["TOTAL"]["p_pck250"], 1, 0.9),
+        mydata["TOTAL"]["p_pck250"] * 100,
+    )
+    '''
+    pck_table += "<tr style=\"font-weight:bold\"><td>TOTAL</td><td></td><td></td><td></td><td></td><td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td>".format(
+        tot["PCK30"]/cnt["PCK30"]*100,
+        tot["PCK50"]/cnt["PCK50"]*100,
+        tot["PCK100"]/cnt["PCK100"]*100,
+        tot["PCK250"]/cnt["PCK250"]*100
+    )
+    pck_table += "<td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td></tr>".format(
+        tot["PPCK30"]/cnt["PPCK30"]*100,
+        tot["PPCK50"]/cnt["PPCK50"]*100,
+        tot["PPCK100"]/cnt["PPCK100"]*100,
+        tot["PPCK250"]/cnt["PPCK250"]*100
+    )
+    '''
 
 
-i=0
-x = predictions[person][action]["positions_aligned"][i, :, 0]
-y = predictions[person][action]["positions_aligned"][i, :, 1]
-z = predictions[person][action]["positions_aligned"][i, :, 2]
+    htmlbody += "<h2>PCKs</h2><table>{}</table>".format(pck_table)
 
-x_ = gt_[person][action][i, :, 0]
-y_ = gt_[person][action][i, :, 1]
-z_ = gt_[person][action][i, :, 2]
+    with open(os.path.join(config["exec"]["outpath"],'results.html'), 'w') as f:
+        f.write("<html><head>{}</head><body>{}</body></html>".format(htmlhead, htmlbody))
+    '''
+    
+    
+    
+    ############ ENDE #############
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x[0])
+        for action in items:
+            gt = np.empty((0))#gt_[subject_][action]
+            print("PCK30\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action, (ck30[subject_][action].sum()) / len(ck30[subject_][action]) * 100, gt.shape[0]))
+    
+    
+    print("####################################")
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            gt = np.empty((0))# gt_[subject_][action]
+            print("PCK50\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action, (ck50[subject_][action].sum()) / len(ck50[subject_][action]) * 100, gt.shape[0]))
+    
+    print("####################################")
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            gt = np.empty((0))# gt_[subject_][action]
+            print("PCK100\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action,
+                                                         (ck100[subject_][action].sum()) / len(ck100[subject_][action]) * 100,
+                                                         gt.shape[0]))
+    
+    print("####################################")
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            gt = np.empty((0))# gt_[subject_][action]
+            print("PPCK30\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action, (p_ck30[subject_][action].sum()) / len(p_ck30[subject_][action]) * 100, gt.shape[0]))
+    
+    
+    print("####################################")
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            gt = np.empty((0))# gt_[subject_][action]
+            print("PPCK50\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action, (p_ck50[subject_][action].sum()) / len(p_ck50[subject_][action]) * 100, gt.shape[0]))
+    
+    print("####################################")
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        for action in items:
+            gt = np.empty((0))# gt_[subject_][action]
+            print("PPCK100\t{}\t{}\t{:.2f}\t{}\tframes".format(subject_, action,
+                                                          (p_ck100[subject_][action].sum()) / len(p_ck100[subject_][action]) * 100,
+                                                          gt.shape[0]))
+    print("####################################")
+    
+    print("PCK Totals")
+    
+    tot = defaultdict(lambda: 0)
+    cnt = defaultdict(lambda: 0)
+    
+    keys = list(a.subject_list)
+    keys.sort(key=lambda x: int(x[1:]))
+    for subject_ in keys:
+        items = list(a.action_list(subject_))
+        items.sort(key=lambda x: x)
+        tot["PCK30"] += ck30[subject_][action].sum()
+        tot["PCK50"] += ck50[subject_][action].sum()
+        tot["PCK100"] += ck100[subject_][action].sum()
+        tot["PCK250"] += ck250[subject_][action].sum()
+        tot["PPCK30"] += p_ck30[subject_][action].sum()
+        tot["PPCK50"] += p_ck50[subject_][action].sum()
+        tot["PPCK100"] += p_ck100[subject_][action].sum()
+        tot["PPCK250"] += p_ck250[subject_][action].sum()
+    
+        cnt["PCK30"] += len(ck30[subject_][action])
+        cnt["PCK50"] += len(ck50[subject_][action])
+        cnt["PCK100"] += len(ck100[subject_][action])
+        cnt["PCK250"] += len(ck250[subject_][action])
+        cnt["PPCK30"] += len(p_ck30[subject_][action])
+        cnt["PPCK50"] += len(p_ck50[subject_][action])
+        cnt["PPCK100"] += len(p_ck100[subject_][action])
+        cnt["PPCK250"] += len(p_ck250[subject_][action])
+    
+    
+    print("PCK30: {}, PCK50: {}, PCK100: {}, PCK250: {}".format(tot["PCK30"]/cnt["PCK30"]*100,tot["PCK50"]/cnt["PCK50"]*100,tot["PCK100"]/cnt["PCK100"]*100,tot["PCK250"]/cnt["PCK250"]*100))
+    print("PPCK30: {}, PPCK50: {}, PPCK100: {}, PCK250: {}".format(tot["PPCK30"]/cnt["PPCK30"]*100,tot["PPCK50"]/cnt["PPCK50"]*100,tot["PPCK100"]/cnt["PPCK100"]*100,tot["PPCK250"]/cnt["PPCK250"]*100))
+    
+    
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    
+    #predictions = a["positions_3d"].item()
+    
+    #person = "S1"
+    #action = "Directions 1"
+    
+    person = "S6"
+    action = "Walking"
+    
+    a = PickleFolder(config, "sequence3D")
+    predseq = a.get_sequence(person,action)
+    predseq.interpolateCenterFromLeftRight(Feature.hip)
+    predseq.interpolateCenterFromLeftRight(Feature.shoulder)
+    
+    b = PickleFolder(config, "aligned3d")
+    predali = b.get_sequence(person,action)
+    predali.interpolateCenterFromLeftRight(Feature.hip)
+    predali.interpolateCenterFromLeftRight(Feature.shoulder)
+    
+    gtseq = human36mGT.get_sequence(person,action)
+    
+    c1 = predseq.cameras[0]
+    c2 = predseq.cameras[1]
+    
+    
+    keypoint_iter = list(set(predseq.npdimensions[NpDimension.KEYPOINT_ITER]).intersection(gtseq.npdimensions[NpDimension.KEYPOINT_ITER]))
+    keypoint_iter.sort(key=lambda x: (int(x != Keypoint(Position.center, Feature.hip))))
+    frame_iter = list(set(predseq.npdimensions[NpDimension.FRAME_ITER]).intersection(gtseq.npdimensions[NpDimension.FRAME_ITER]))
+    
+    frame_iter.sort()
+    
+    prediction, f = predseq.get(OrderedDict([(NpDimension.FRAME_ITER,frame_iter),
+                                                     (NpDimension.KEYPOINT_ITER,keypoint_iter),
+                                                     (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
+    prediction_aligned, f = predali.get(OrderedDict([(NpDimension.FRAME_ITER,frame_iter),
+                                                     (NpDimension.KEYPOINT_ITER,keypoint_iter),
+                                                     (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
+    gt, f_ = gtseq.get(OrderedDict([(NpDimension.FRAME_ITER, frame_iter),
+                                      (NpDimension.KEYPOINT_ITER, keypoint_iter),
+                                      (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
+    
+    prediction[:,:] -= prediction[:,(0,)]
+    prediction_aligned[:,:] -= prediction_aligned[:,(0,)]
+    gt[:, :] -= gt[:, (0,)]
+    
+    #P1 = camera_to_world(predictions[person][action]["P1"][None,:,3],c1.orientation.astype(float),c1.translation)
+    #P2 = camera_to_world(predictions[person][action]["P2"][None,:,3],c1.orientation.astype(float),c1.translation)
+    
+    
+    
+    
+    i=0
+    x = prediction_aligned[i, :, 0]
+    y = prediction_aligned[i, :, 1]
+    z = prediction_aligned[i, :, 2]
+    
+    x_ = gt[i, :, 0]
+    y_ = gt[i, :, 1]
+    z_ = gt[i, :, 2]
+    
+    x__ = prediction[i, :, 0]
+    y__ = prediction[i, :, 1]
+    z__ = prediction[i, :, 2]
+    
+    #data, = ax.plot(x,y,z, linestyle="", marker=".", color="blue")
+    data2, = ax.plot(x_,y_,z_, linestyle="", marker = ".", color="red")
+    data3, = ax.plot(x__,y__,z__, linestyle="", marker = ".", color="yellow")
+    txt = list()
+    for p in range(prediction_aligned.shape[1]):
+        pt = prediction_aligned[i,p]
+        txt.append(ax.text(pt[0],pt[1],pt[2],p.__str__()))
+    
+    for i in range(1,prediction_aligned.shape[0]):
+    
+        x = prediction_aligned[i, :, 0]
+        y = prediction_aligned[i, :, 1]
+        z = prediction_aligned[i, :, 2]
+    
+        x_ = gt[i, :, 0]
+        y_ = gt[i, :, 1]
+        z_ = gt[i, :, 2]
+    
+        x__ = prediction[i, :, 0]
+        y__ = prediction[i, :, 1]
+        z__ = prediction[i, :, 2]
+    
+        scale = 2 * np.max([1,
+                            #np.max(x), np.max(-x), np.max(y), np.max(-y), np.max(z), np.max(-z),
+                            np.max(x_), np.max(-x_), np.max(y_), np.max(-y_), np.max(z_), np.max(-z_),
+                            np.max(x__), np.max(-x__), np.max(y__), np.max(-y__), np.max(z__), np.max(-z__),
+                            ])
+        ax.set_xlim3d([-0.5 * scale, 0.5 * scale])
+        ax.set_ylim3d([-0.5 * scale, 0.5 * scale])
+        ax.set_zlim3d([0, scale])
+    
+        for i in range(len(x)):
+            txt[i].set_position_3d([x[i],y[i],z[i]])
+        #data.set_data(x, y)
+        #data.set_3d_properties(z)
+        data2.set_data(x_, y_)
+        data2.set_3d_properties(z_)
+        data3.set_data(x__, y__)
+        data3.set_3d_properties(z__)
+    
+        plt.show(block=False)
+        fig.canvas.draw()
+        plt.pause(0.01)
+    
+    a.close
+    '''
+if __name__ == "__main__":
 
-x__ = predictions[person][action]["positions"][i, :, 0]
-y__ = predictions[person][action]["positions"][i, :, 1]
-z__ = predictions[person][action]["positions"][i, :, 2]
-
-data, = ax.plot(x,y,z, linestyle="", marker=".", color="blue")
-data2, = ax.plot(x_,y_,z_, linestyle="", marker = ".", color="red")
-data3, = ax.plot(x__,y__,z__, linestyle="", marker = ".", color="yellow")
-txt = list()
-for p in range(predictions[person][action]["positions_aligned"].shape[1]):
-    pt = predictions[person][action]["positions_aligned"][i,p]
-    txt.append(ax.text(pt[0],pt[1],pt[2],p.__str__()))
-
-for i in range(1,predictions[person][action]["positions_aligned"].shape[0]):
-
-    x = predictions[person][action]["positions_aligned"][i, :, 0]
-    y = predictions[person][action]["positions_aligned"][i, :, 1]
-    z = predictions[person][action]["positions_aligned"][i, :, 2]
-
-    x_ = gt_[person][action][i, :, 0]
-    y_ = gt_[person][action][i, :, 1]
-    z_ = gt_[person][action][i, :, 2]
-
-    x__ = predictions[person][action]["positions"][i, :, 0]
-    y__ = predictions[person][action]["positions"][i, :, 1]
-    z__ = predictions[person][action]["positions"][i, :, 2]
-
-    scale = 2 * np.max([1,
-                        np.max(x), np.max(-x), np.max(y), np.max(-y), np.max(z), np.max(-z),
-                        np.max(x_), np.max(-x_), np.max(y_), np.max(-y_), np.max(z_), np.max(-z_),
-                        np.max(x__), np.max(-x__), np.max(y__), np.max(-y__), np.max(z__), np.max(-z__),])
-    ax.set_xlim3d([-0.5 * scale, 0.5 * scale])
-    ax.set_ylim3d([-0.5 * scale, 0.5 * scale])
-    ax.set_zlim3d([0, scale])
-
-    for i in range(len(x)):
-        txt[i].set_position_3d([x[i],y[i],z[i]])
-    data.set_data(x, y)
-    data.set_3d_properties(z)
-    data2.set_data(x_, y_)
-    data2.set_3d_properties(z_)
-    data3.set_data(x__, y__)
-    data3.set_3d_properties(z__)
-
-    plt.show(block=False)
-    fig.canvas.draw()
-    plt.pause(0.01)
-
-a.close
+    #main(sys.argv[1])
+    files = easygui.fileopenbox(default=os.path.join(os.path.dirname(sys.argv[0]),"*.conf"),filetypes=[["*.conf", "Configuration File"]],multiple=True)
+    if files is None:
+        exit()
+    if isinstance(files,list):
+        for f in files:
+            main(f)
+    else:
+        main(files)
