@@ -242,17 +242,42 @@ def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence,
         #                                                           bonemat=bonemat, x1=kp1, x2=kp2, acc1=acc1,
         #                                                           acc2=acc2)
         pass
-
-    for i in range(iterellipse): #3
-        corrected_sequence3d, A = EllipseCorrector.correct_distortion(sequence3d,goodsamples=config.getint("Ellipse","goodsamples"), maxstepsfactor=config.getint("Ellipse","maxfactor"), alpha=config.getfloat("Ellipse","alpha"))
+    bestA = np.inf
+    bestSequence3D = None
+    bestP = None
+    bestP_ = None
+    iterationCounter = 0
+    while iterellipse>0: # iterellipse is a const! Thus this is either always true or always false. See also breaking conditions below
+        corrected_sequence3d, A = EllipseCorrector.correct_distortion(
+            sequence3d,
+            goodsamples=config.getint("Ellipse","goodsamples"),
+            maxstepsfactor=config.getint("Ellipse","maxfactor"),
+            alpha=config.getfloat("Ellipse","alpha"),
+            samplesize=config.getint("Ellipse","samplesize"),
+            symmetricLengh=config.getboolean("Ellipse","symmetricLength")
+        )
 
         evaluatedA = np.sum(np.square((A / np.sum(A) * 3) - np.eye(3)))
         print("evaluatedA = " + str(evaluatedA))
+
         if evaluatedA < config.getfloat("Ellipse", "breakingcondition"):
+            bestA = evaluatedA
             print("IT'S A BALL! breaking condition met")
-
-
+            sequence3d = corrected_sequence3d
             break
+        if bestA > evaluatedA:
+            bestA = evaluatedA
+            bestSequence3D = corrected_sequence3d
+            bestP = P
+            bestP_ = P_
+        if iterationCounter >= iterellipse:
+            if config["Ellipse"].getboolean("SelectBestA"):
+                sequence3d = bestSequence3D
+                P = bestP
+                P_ = bestP_
+            break
+        iterationCounter += 1
+
         sequence3d = corrected_sequence3d
 
         nprNp, nprFormat = sequence3d.get(format=[(NpDimension.FRAME_ITER, None),
@@ -332,6 +357,26 @@ def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence,
         P_ = c2.intrinsicMatrix @ Rt2_[:3]
         #npr_ = npr_[:3].transpose().reshape(shape)
 
+        '''
+        if evaluatedA < config.getfloat("Ellipse", "breakingcondition"):
+            print("IT'S A BALL! breaking condition met")
+            #sequence3d = corrected_sequence3d
+            sequence3d._cameras = [c1, c2]
+            break
+        if bestA > evaluatedA:
+            bestA = evaluatedA
+            sequence3d._cameras = [c1,c2]
+            bestSequence3D = sequence3d
+            bestP = P
+            bestP_ = P_
+        if iterationCounter >= iterellipse:
+            if config["Ellipse"].getboolean("SelectBestA"):
+                sequence3d = bestSequence3D
+                P = bestP
+                P_ = bestP_
+            break
+        iterationCounter += 1
+        '''
         triangulatedPoints = cv2.triangulatePoints(P, P_, kp[0].reshape(-1,2).transpose(), kp[1].reshape(-1,2).transpose())
         triangulatedPoints /= triangulatedPoints[3, :]
         triangulatedPoints = triangulatedPoints.transpose()[:, :3].reshape(-1, 17, 3)
@@ -381,7 +426,7 @@ def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence,
     #newpred_acc, f_acc = sequence3d.get(format=[(NpDimension.FRAME_ITER, nprFormat[NpDimension.FRAME_ITER]),
     #                                          (NpDimension.KEYPOINT_ITER, nprFormat[NpDimension.KEYPOINT_ITER]),
     #                                          (NpDimension.KP_DATA, KpDim.accuracy)])
-
+    c1 = sequence3d.cameras[sequence3d.cameras.index(cam1_idx)]
     bonemat, bones = Bones.getBonemat(f[NpDimension.KEYPOINT_ITER])
     newpred = world_to_camera((newpred.reshape(-1,3) * GTCameraDist).astype(float),c1.orientation.astype(float),c1.translation)
     newpred = camera_to_world(newpred,c1gt.orientation.astype(float),c1gt.translation).reshape(-1,17,3)
@@ -472,7 +517,8 @@ def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence,
                     "action":k,
                     "subject":s,
                     "bonemat": bonemat,
-                    "bones": bones
+                    "bones": bones,
+                    "bestA" : bestA,
                     }, f, protocol=pickle.HIGHEST_PROTOCOL)
 
     return sequence3d, aligned3d, P, P_

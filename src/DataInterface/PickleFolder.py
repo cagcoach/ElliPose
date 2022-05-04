@@ -54,3 +54,8 @@ class PickleFolder(DataInterface):
         subject = self.subject_list[0]
         action = self.action_list(subject)[0]
         return self.get_sequence(subject, action).npdimensions[NpDimension.KEYPOINT_ITER]
+
+    def get_bestA_for_Sequence(self, subject: str, action: str):
+        with open(self._dataPath[subject][action], "rb") as input_file:
+            datadict = pickle.load(input_file)
+        return datadict["bestA"] if "bestA" in datadict else None;

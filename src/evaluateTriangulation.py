@@ -99,7 +99,7 @@ def main(conf):
     human36mGT = Human36mGT(config)
 
     source = config["exec"]["source"]
-
+    refA = config.getfloat("Ellipse","breakingcondition")
     #dataset = Human36mDataset(config.get(source, "3D"))
 
     '''
@@ -164,7 +164,7 @@ def main(conf):
     outB = ""
     mpjpehtml = defaultdict(lambda:dict())#"<tr><td>subject</td><td>action</td><td>MPJPE</td><td>PMPJPE</td><td>frames</td></tr>"
     mydata = defaultdict(lambda:defaultdict(lambda:dict()))
-    mpjpehtmlhead = "<td>MPJPE</td><td>PMPJPE</td><td>frames</td>"
+    mpjpehtmlhead = "<td>MPJPE</td><td>PMPJPE</td><td>Trajectory</td><td>Best A</td><td>frames</td>"
 
     keys = a.subject_list
     keys.sort(key=lambda x: int(x[1:]))
@@ -192,6 +192,7 @@ def main(conf):
         def process(action):
             outdict = dict()
             predseq = a.get_sequence(subject_,action)
+            bestA = a.get_bestA_for_Sequence(subject_,action)
             predseq.interpolateCenterFromLeftRight(Feature.hip)
             predseq.interpolateCenterFromLeftRight(Feature.shoulder)
             gtseq = human36mGT.get_sequence(subject_,action)
@@ -208,7 +209,7 @@ def main(conf):
             gt, f_ = gtseq.get(OrderedDict([(NpDimension.FRAME_ITER, frame_iter),
                                               (NpDimension.KEYPOINT_ITER, keypoint_iter),
                                               (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
-
+            thistrajectory = mpjpe(torch.from_numpy(prediction[:,(0,)]), gt[:,(0,)]) * 1000
             prediction[:,:] -= prediction[:,(0,)]
             gt[:, :] -= gt[:, (0,)]
 
@@ -220,11 +221,13 @@ def main(conf):
             #    "<tr><td>{}</td><td>{}</td><td style=\"background-color:#{:06x}\">{:.2f} mm</td><td>{} frames</td></tr>".format(subject_, action, bgcolor, thispmpjpe, gt.shape[0]))
 
             #outB += ("MPJPE\t{}\t{}\t{:.2f}\tmm\t{}\tframes\n".format(subject_, action, thismpjpe, gt.shape[0]))
-            outdict["mpjpehtml"] = "<td style=\"{}\">{:.2f} mm</td><td style=\"{}\">{:.2f} mm</td><td>{} frms</td>".format(
-                    numbercellstyle(thismpjpe, 0, 100), thismpjpe,numbercellstyle(thispmpjpe, 0, 80), thispmpjpe, gt.shape[0]
+            outdict["mpjpehtml"] = "<td style=\"{}\">{:.2f} mm</td><td style=\"{}\">{:.2f} mm</td><td style=\"{}\">{:.2f} mm</td><td style=\"{}\">{:.4f}</td><td>{} frms</td>".format(
+                    numbercellstyle(thismpjpe, 0, 100), thismpjpe,numbercellstyle(thispmpjpe, 0, 80), thispmpjpe,numbercellstyle(thistrajectory, 0, 100), thistrajectory, numbercellstyle(np.log10(bestA), np.log10(refA), 1), bestA, gt.shape[0]
                 )
+            outdict["trajectory"] = thistrajectory
             outdict["mpjpe"] = thismpjpe
             outdict["pmpjpe"] = thispmpjpe
+            outdict["bestA"] = bestA
             outdict["frames"] = gt.shape[0]
             allPointsDist = np.linalg.norm(prediction - gt, axis=2).reshape(-1)
 
@@ -247,11 +250,13 @@ def main(conf):
 
         with Pool(24) as p:
             mydata[subject_] = defaultdict(lambda: dict(), **dict(zip(items,p.map(process,items))))
-
+        mydata[subject_]["TOTAL"]["trajectory"] = np.mean([mydata[subject_][a]["trajectory"] for a in items])
         mydata[subject_]["TOTAL"]["mpjpe"] = np.mean([mydata[subject_][a]["mpjpe"] for a in items])
         mydata[subject_]["TOTAL"]["pmpjpe"] = np.mean([mydata[subject_][a]["pmpjpe"] for a in items])
+    mydata["TOTAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in keys])
     mydata["TOTAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in keys])
     mydata["TOTAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in keys])
+    mydata["TOTALVAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in set(["S9", "S11"]).intersection(keys)])
     mydata["TOTALVAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in set(["S9","S11"]).intersection(keys)])
     mydata["TOTALVAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in set(["S9","S11"]).intersection(keys)])
 
@@ -265,7 +270,8 @@ def main(conf):
     cnt = defaultdict(lambda: 0)
     keys = list(a.subject_list)
     keys.sort(key=lambda x: int(x[1:]))
-    pck_table = "<tr>" \
+    pck_table = "<thead style=\"position: sticky; top: 0;\">" \
+                "<tr style=\"background-color: #ddd;\">" \
                 "<td>subject</td>" \
                 "<td>action</td>"\
                 +mpjpehtmlhead+\
@@ -279,7 +285,9 @@ def main(conf):
                 "<td>PPCK<br />100</td>" \
                 "<td>PPCK<br />150</td>" \
                 "<td>PPCK<br />250</td>" \
-                "</tr>"
+                "</tr>" \
+                "</thead>" \
+                "<tbody>"
     for subject_ in keys:
         items = list(a.action_list(subject_))
         items.sort(key=lambda x: x)
@@ -393,6 +401,8 @@ def main(conf):
              "<td style=\"outline: 1px solid #ddd;font-weight:bold\">TOTAL</td>" \
              "<td style=\"outline: 1px solid #ddd;{}\">{:.2f} mm</td>" \
              "<td style=\"outline: 1px solid #ddd;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #ddd;{}\">{}</td>" \
              "<td style=\"outline: 1px solid #ddd;{}\">{}</td>" \
              "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
              "<td style=\"outline: 1px solid #ddd;{}\">{:.2f}</td>" \
@@ -410,6 +420,10 @@ def main(conf):
             mydata[subject_]["TOTAL"]["mpjpe"],
             numbercellstyle(mydata[subject_]["TOTAL"]["pmpjpe"], 0, 80),
             mydata[subject_]["TOTAL"]["pmpjpe"],
+            numbercellstyle(mydata[subject_]["TOTAL"]["trajectory"], 0, 100),
+            mydata[subject_]["TOTAL"]["trajectory"],
+            "",
+            "",
             "",
             "",
             numbercellstyle(mydata[subject_]["TOTAL"]["pck30"], 1, 0),
@@ -433,95 +447,60 @@ def main(conf):
             numbercellstyle(mydata[subject_]["TOTAL"]["p_pck250"], 1, 0.9),
             mydata[subject_]["TOTAL"]["p_pck250"] * 100,
         )
-    pck_table += "<tr style=\"background-color:#bbb;\">" \
-         "<td style=\"outline: 1px solid #bbb;font-weight:bold\">S9,S11</td>" \
-         "<td style=\"outline: 1px solid #bbb;font-weight:bold\">TOTAL</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-         "</tr>".format(
-        numbercellstyle(mydata["TOTALVAL"]["mpjpe"], 0, 100),
-        mydata["TOTALVAL"]["mpjpe"],
-        numbercellstyle(mydata["TOTALVAL"]["pmpjpe"], 0, 80),
-        mydata["TOTALVAL"]["pmpjpe"],
-        "",
-        "",
-        numbercellstyle(mydata["TOTALVAL"]["pck30"], 1, 0),
-        mydata["TOTALVAL"]["pck30"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["pck50"], 1, 0.2),
-        mydata["TOTALVAL"]["pck50"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["pck100"], 1, 0.6),
-        mydata["TOTALVAL"]["pck100"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["pck150"], 1, 0.8),
-        mydata["TOTALVAL"]["pck150"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["pck250"], 1, 0.9),
-        mydata["TOTALVAL"]["pck250"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["p_pck30"], 1, 0),
-        mydata["TOTALVAL"]["p_pck30"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["p_pck50"], 1, 0.2),
-        mydata["TOTALVAL"]["p_pck50"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["p_pck100"], 1, 0.6),
-        mydata["TOTALVAL"]["p_pck100"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["p_pck150"], 1, 0.8),
-        mydata["TOTALVAL"]["p_pck150"] * 100,
-        numbercellstyle(mydata["TOTALVAL"]["p_pck250"], 1, 0.9),
-        mydata["TOTALVAL"]["p_pck250"] * 100,
-    )
 
-    pck_table += "<tr style=\"background-color:#bbb;\">" \
-                 "<td style=\"outline: 1px solid #bbb;font-weight:bold\">ALL</td>" \
-                 "<td style=\"outline: 1px solid #bbb;font-weight:bold\">TOTAL</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
-                 "</tr>".format(
-        numbercellstyle(mydata["TOTAL"]["mpjpe"], 0, 100),
-        mydata["TOTAL"]["mpjpe"],
-        numbercellstyle(mydata["TOTAL"]["pmpjpe"], 0, 80),
-        mydata["TOTAL"]["pmpjpe"],
-        "",
-        "",
-        numbercellstyle(mydata["TOTAL"]["pck30"], 1, 0),
-        mydata["TOTAL"]["pck30"] * 100,
-        numbercellstyle(mydata["TOTAL"]["pck50"], 1, 0.2),
-        mydata["TOTAL"]["pck50"] * 100,
-        numbercellstyle(mydata["TOTAL"]["pck100"], 1, 0.6),
-        mydata["TOTAL"]["pck100"] * 100,
-        numbercellstyle(mydata["TOTAL"]["pck150"], 1, 0.8),
-        mydata["TOTAL"]["pck150"] * 100,
-        numbercellstyle(mydata["TOTAL"]["pck250"], 1, 0.9),
-        mydata["TOTAL"]["pck250"] * 100,
-        numbercellstyle(mydata["TOTAL"]["p_pck30"], 1, 0),
-        mydata["TOTAL"]["p_pck30"] * 100,
-        numbercellstyle(mydata["TOTAL"]["p_pck50"], 1, 0.2),
-        mydata["TOTAL"]["p_pck50"] * 100,
-        numbercellstyle(mydata["TOTAL"]["p_pck100"], 1, 0.6),
-        mydata["TOTAL"]["p_pck100"] * 100,
-        numbercellstyle(mydata["TOTAL"]["p_pck150"], 1, 0.8),
-        mydata["TOTAL"]["p_pck150"] * 100,
-        numbercellstyle(mydata["TOTAL"]["p_pck250"], 1, 0.9),
-        mydata["TOTAL"]["p_pck250"] * 100,
-    )
+    for key, name in {"TOTALVAL":"S9,S11","TOTAL":"ALL"}.items():
+        pck_table += "<tr style=\"background-color:#bbb;\">" \
+             "<td style=\"outline: 1px solid #bbb;font-weight:bold\">{}</td>" \
+             "<td style=\"outline: 1px solid #bbb;font-weight:bold\">TOTAL</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f} mm</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "<td style=\"outline: 1px solid #bbb;{}\">{:.2f}</td>" \
+             "</tr>".format(
+            name,
+            numbercellstyle(mydata[key]["mpjpe"], 0, 100),
+            mydata[key]["mpjpe"],
+            numbercellstyle(mydata[key]["pmpjpe"], 0, 80),
+            mydata[key]["pmpjpe"],
+            numbercellstyle(mydata[key]["trajectory"], 0, 100),
+            mydata[key]["trajectory"],
+            "",
+            "",
+            "",
+            "",
+            numbercellstyle(mydata[key]["pck30"], 1, 0),
+            mydata[key]["pck30"] * 100,
+            numbercellstyle(mydata[key]["pck50"], 1, 0.2),
+            mydata[key]["pck50"] * 100,
+            numbercellstyle(mydata[key]["pck100"], 1, 0.6),
+            mydata[key]["pck100"] * 100,
+            numbercellstyle(mydata[key]["pck150"], 1, 0.8),
+            mydata[key]["pck150"] * 100,
+            numbercellstyle(mydata[key]["pck250"], 1, 0.9),
+            mydata[key]["pck250"] * 100,
+            numbercellstyle(mydata[key]["p_pck30"], 1, 0),
+            mydata[key]["p_pck30"] * 100,
+            numbercellstyle(mydata[key]["p_pck50"], 1, 0.2),
+            mydata[key]["p_pck50"] * 100,
+            numbercellstyle(mydata[key]["p_pck100"], 1, 0.6),
+            mydata[key]["p_pck100"] * 100,
+            numbercellstyle(mydata[key]["p_pck150"], 1, 0.8),
+            mydata[key]["p_pck150"] * 100,
+            numbercellstyle(mydata[key]["p_pck250"], 1, 0.9),
+            mydata[key]["p_pck250"] * 100,
+        )
+
     '''
     pck_table += "<tr style=\"font-weight:bold\"><td>TOTAL</td><td></td><td></td><td></td><td></td><td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td><td>{:.2f}</td>".format(
         tot["PCK30"]/cnt["PCK30"]*100,
@@ -537,11 +516,38 @@ def main(conf):
     )
     '''
 
+    pck_table += "</tbody>"
+    latex1 = "<textarea readonly>S9, S11&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(mydata["TOTALVAL"]["mpjpe"],
+        mydata["TOTALVAL"]["pmpjpe"],
+        mydata["TOTALVAL"]["pck50"] * 100,
+        mydata["TOTALVAL"]["pck100"] * 100,
+        mydata["TOTALVAL"]["pck150"] * 100,
+        mydata["TOTALVAL"]["p_pck50"] * 100,
+        mydata["TOTALVAL"]["p_pck100"] * 100,
+        mydata["TOTALVAL"]["p_pck150"] * 100,
+    )
+    latex2 = "<textarea readonly>Full&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(
+        mydata["TOTAL"]["mpjpe"],
+        mydata["TOTAL"]["pmpjpe"],
+        mydata["TOTAL"]["pck50"] * 100,
+        mydata["TOTAL"]["pck100"] * 100,
+        mydata["TOTAL"]["pck150"] * 100,
+        mydata["TOTAL"]["p_pck50"] * 100,
+        mydata["TOTAL"]["p_pck100"] * 100,
+        mydata["TOTAL"]["p_pck150"] * 100,
+        )
+    htmlbody += "<h2>Results</h2><table>{}</table>{}{}".format(pck_table,latex1,latex2)
 
-    htmlbody += "<h2>PCKs</h2><table>{}</table>".format(pck_table)
+    configTable = "<h2>Full Config</h2>"
+    for sec in config.sections():
+        configTable += "<h2>"+sec+"</h2><table>"
+        for k,v in config[sec].items():
+            configTable += "<tr><td>{}</td><td>{}</td><tr>".format(k,v)
+        configTable += "</table>"
+
 
     with open(os.path.join(config["exec"]["outpath"],'results.html'), 'w') as f:
-        f.write("<html><head>{}</head><body>{}</body></html>".format(htmlhead, htmlbody))
+        f.write("<html><head><div style=\"overflow: auto;\">{}</div></head><body>{}{}</body></html>".format(htmlhead, htmlbody,configTable))
     '''
     
     

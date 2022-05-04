@@ -9,14 +9,14 @@ import cvxpy as cp
 
 from src.DataInterface.Sequence import Sequence, NpDimension
 from src.Skeleton.Bones import Bones
-from src.Skeleton.Keypoint import Dimension as KpDim
+from src.Skeleton.Keypoint import Dimension as KpDim, Position
 
 VISUALIZE = False
 KEEP_ALL_RANSAC_INLIER_DATA = False
 
 class EllipseCorrector:
     @staticmethod
-    def correct_distortion(sequence: Sequence, goodsamples = 1000, maxstepsfactor = 40, alpha = 1) -> Sequence:
+    def correct_distortion(sequence: Sequence, goodsamples = 1000, maxstepsfactor = 40, alpha = 1, samplesize = 10, symmetricLengh = False) -> Sequence:
         newprediction, f = sequence.get(format=OrderedDict([(NpDimension.FRAME_ITER, None),
                                                             (NpDimension.KEYPOINT_ITER, None),
                                                             (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
@@ -28,6 +28,26 @@ class EllipseCorrector:
 
         bonemat, bones = Bones.getBonemat(f[NpDimension.KEYPOINT_ITER])
         bonemat = bonemat.transpose()
+        pairs = []
+        if symmetricLengh:
+            for i in range(len(bones)):
+                for j in range(i):
+                    b1 = bones[i][0]
+                    b1isC = (bones[i][0].pos == Position.center)
+                    b2 = bones[i][1]
+                    b2isC = (bones[i][1].pos == Position.center)
+
+                    B1 = bones[j][0]
+                    B1isC = (bones[j][0].pos == Position.center)
+                    B2 = bones[j][1]
+                    B2isC = (bones[j][1].pos == Position.center)
+
+                    if (b1.feat == B1.feat and b1isC == B1isC and b2.feat == B2.feat and b2isC == B2isC)\
+                        or (b1.feat == B2.feat and b1isC == B2isC and b2.feat == B1.feat and b2isC == B1isC):
+                            pairs.append([i,j])
+
+
+
         medianpt = np.nanmedian(newprediction.reshape(-1, 3), axis=0)
         bonevect = np.array([newprediction[..., 0] @ bonemat, newprediction[..., 1] @ bonemat, newprediction[..., 2] @ bonemat])
         meanbonelen = np.nanmedian(np.linalg.norm(bonevect, axis=0), axis=0)
@@ -60,7 +80,7 @@ class EllipseCorrector:
             data[i, :, 5 + i] = 1
         e = np.array([np.square(bonevect[0]) + np.square(bonevect[1]) + np.square(bonevect[2])]).transpose()
 
-        samplesize = 10  # plus one of each bone for scale
+        #samplesize = 10  # plus one of each bone for scale
         ransac_steps = goodsamples
         sample_ranges = [list(np.array(range(k.shape[0]))[~np.isnan(k).any(axis=1)]) for k in bonevect.swapaxes(0, 2)]
         # inliers_threshold = 0.0005
@@ -78,7 +98,7 @@ class EllipseCorrector:
         obj_fun = cp.sum(cp.abs(data_param @ s - e_param))
 
         # constraint = [cp.sum(s[5:]) == bonemat.shape[1],]
-        constraint = []
+        constraint = [s[5+a] == s[5+b] for a,b in pairs] # Symetric Body Shape
         objective = cp.Minimize(obj_fun)
         prob = cp.Problem(objective=objective, constraints=constraint)
 
