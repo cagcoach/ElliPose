@@ -95,6 +95,11 @@ def main(conf):
 
     config.read(conf)
 
+    if not os.path.isdir(config.get("exec","outpath")):
+        op = config.get("exec","outpath")
+        cp = conf
+        strindex = cp.index(op)
+        config["exec"]["outpath"] = cp[:(strindex+len(op))]
 
     human36mGT = Human36mGT(config)
 
@@ -189,13 +194,15 @@ def main(conf):
         #for action in items:
             #for action, prediction in items:
             #gt = gt_[subject_][action]
-        def process(action):
+        def process(action : str):
+            gtaction = action.split("_")[0]
+
             outdict = dict()
             predseq = a.get_sequence(subject_,action)
             bestA = a.get_bestA_for_Sequence(subject_,action)
             predseq.interpolateCenterFromLeftRight(Feature.hip)
             predseq.interpolateCenterFromLeftRight(Feature.shoulder)
-            gtseq = human36mGT.get_sequence(subject_,action)
+            gtseq = human36mGT.get_sequence(subject_,gtaction)
             #
             keypoint_iter = list(set(predseq.npdimensions[NpDimension.KEYPOINT_ITER]).intersection(gtseq.npdimensions[NpDimension.KEYPOINT_ITER]))
             keypoint_iter.sort(key=lambda x: (int(x != Keypoint(Position.center, Feature.hip))))
@@ -546,7 +553,7 @@ def main(conf):
         configTable += "</table>"
 
 
-    with open(os.path.join(config["exec"]["outpath"],'results.html'), 'w') as f:
+    with open(os.path.join(os.path.dirname(conf),'results.html'), 'w') as f:
         f.write("<html><head><div style=\"overflow: auto;\">{}</div></head><body>{}{}</body></html>".format(htmlhead, htmlbody,configTable))
     '''
     
@@ -773,11 +780,15 @@ def main(conf):
 if __name__ == "__main__":
 
     #main(sys.argv[1])
-    files = easygui.fileopenbox(default=os.path.join(os.path.dirname(sys.argv[0]),"*.conf"),filetypes=[["*.conf", "Configuration File"]],multiple=True)
-    if files is None:
-        exit()
-    if isinstance(files,list):
-        for f in files:
-            main(f)
+    if len(sys.argv) <= 1:
+        files = easygui.fileopenbox(default=os.path.join(os.path.dirname(sys.argv[0]),"*.conf"),filetypes=[["*.conf", "Configuration File"]],multiple=True)
+        if files is None:
+            exit()
+        if isinstance(files,list):
+            for f in files:
+                main(f)
+        else:
+            main(files)
     else:
-        main(files)
+        for file in sys.argv[1:]:
+            main(file)

@@ -4,6 +4,7 @@ import pickle
 import re
 from functools import lru_cache
 from typing import List, Dict
+import numpy as np
 
 from src.DataInterface.DataInterface import DataInterface
 from src.DataInterface.MultiViewFrame import MultiViewFrame
@@ -58,4 +59,4 @@ class PickleFolder(DataInterface):
     def get_bestA_for_Sequence(self, subject: str, action: str):
         with open(self._dataPath[subject][action], "rb") as input_file:
             datadict = pickle.load(input_file)
-        return datadict["bestA"] if "bestA" in datadict else None;
+        return datadict["bestA"] if "bestA" in datadict else np.nan;

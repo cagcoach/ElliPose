@@ -7,7 +7,7 @@ import math
 import sys, os
 #from multiprocessing.pool  import ThreadPool as Pool
 from pathos.multiprocessing import ProcessingPool as Pool
-
+import random
 import numpy as np
 import scipy
 import scipy.linalg
@@ -175,7 +175,7 @@ def __OLD__points2Dto3D(points1, points2):
     res = cv2.triangulatePoints(P,P_,points1.transpose(),points2.transpose()).transpose()
     return res / res[:,3]
 
-def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence, np.array, np.array,ConfigParser):
+def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequence, Sequence, np.array, np.array,ConfigParser):
 
     s = var[0]
     k = var[1]
@@ -185,7 +185,7 @@ def estimateForKeypoint(var,iterellipse,iterbone,config) -> (Sequence, Sequence,
     #gt = var[5]
     outpath = var[6]
 
-    picklepath = os.path.join(outpath, "{}_{}.pkl".format(s, k))
+    picklepath = os.path.join(outpath, "{}_{}{}.pkl".format(s, k, filenameappend))
     try:
         if(os.path.exists(picklepath)):
             print(s + " " + k + " already exists: loading from file " + picklepath)
@@ -557,6 +557,9 @@ def main(argv):
         outpath = os.path.abspath(outpath)
         config["exec"]["outpath"] = "output_{}".format(curtimestr)
         config["exec"]["time"] = curtimestr
+    if not "RandomSeed" in config["exec"].keys():
+        config["exec"]["RandomSeed"] = random.randrange(sys.maxsize)
+    random.seed(config.getint("exec","RandomSeed"))
 
     Path(outpath).mkdir(parents=True, exist_ok=True)
 
@@ -589,8 +592,9 @@ def main(argv):
         poseset = "2D"
         input_2d_dataset = CPN2D(config,human36mGT)
 
+    subjects_conf = config["exec"]["Subjects"].split(" ")
     subjects = input_2d_dataset.subject_list
-
+    subjects = list(set(subjects).intersection(set(subjects_conf)))
     '''
     if source ==  "Human3.6m":
         poseset = "2D_detectron_pt"
@@ -686,7 +690,10 @@ def main(argv):
     else:
         estimatorOutput = list()
         for ei in estimatorInput:
-            estimatorOutput.append(estimateForKeypoint(ei,iterellipse = config.getint("exec","iterEllipse"),iterbone = config.getint("exec","iterBone"),config = config))
+            for i in range(config.getint("exec","repeat")):
+                if config.getint("exec","repeat") > 1:
+                    fa = "_Run{}".format(i+1)
+                estimatorOutput.append(estimateForKeypoint(ei,iterellipse = config.getint("exec","iterEllipse"),iterbone = config.getint("exec","iterBone"),config = config,filenameappend=fa))
 
     print("Save to File")
     e3d = Estimated3dDataset(estimatorInput, estimatorOutput)
