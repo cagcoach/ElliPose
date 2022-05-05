@@ -558,7 +558,7 @@ def main(argv):
         config["exec"]["outpath"] = "output_{}".format(curtimestr)
         config["exec"]["time"] = curtimestr
     if not "RandomSeed" in config["exec"].keys():
-        config["exec"]["RandomSeed"] = random.randrange(sys.maxsize)
+        config["exec"]["RandomSeed"] = str(random.randrange(sys.maxsize))
     random.seed(config.getint("exec","RandomSeed"))
 
     Path(outpath).mkdir(parents=True, exist_ok=True)
