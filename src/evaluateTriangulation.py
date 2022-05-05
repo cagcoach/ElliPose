@@ -791,4 +791,15 @@ if __name__ == "__main__":
             main(files)
     else:
         for file in sys.argv[1:]:
-            main(file)
+            if os.path.isdir(file):
+                files = easygui.fileopenbox(default=os.path.join(file, "*.conf"),
+                                    filetypes=[["*.conf", "Configuration File"]], multiple=True)
+                if files is None:
+                    exit()
+                if isinstance(files, list):
+                    for f in files:
+                        main(f)
+                else:
+                    main(files)
+            else:
+                main(file)
