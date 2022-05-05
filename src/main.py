@@ -671,10 +671,10 @@ def main(argv):
 
     estimatorInput = list()
     #subjects = ["S8",]
-    for s in subjects:
+    for s in sorted(subjects):
         actionlist = input_2d_dataset.action_list(s)
         #actionlist = ["Directions",]
-        for k in actionlist:
+        for k in sorted(actionlist):
             #estimatorInput.append([kp1_[s][k], kp2_[s][k], gt_[s][k], c1[s], c2[s], k, s, acc1mul2[s][k],acc1[s][k],acc2[s][k]])
             estimatorInput.append([s,k,input_2d_dataset,cam1_idx,cam2_idx,human36mGT,outpath])
 
