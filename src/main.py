@@ -701,8 +701,8 @@ def main(argv):
 
     else:
         estimatorOutput = list()
-        for ei in estimatorInput:
-            for i in range(config.getint("exec","repeat")):
+        for i in range(config.getint("exec", "repeat")):
+            for ei in estimatorInput:
                 if config.getint("exec","repeat") > 1:
                     fa = "_Run{}".format(i+1)
                 estimatorOutput.append(estimateForKeypoint(ei,iterellipse = config.getint("exec","iterEllipse"),iterbone = config.getint("exec","iterBone"),config = config,filenameappend=fa))
