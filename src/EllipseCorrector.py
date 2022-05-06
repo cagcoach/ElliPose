@@ -16,7 +16,7 @@ KEEP_ALL_RANSAC_INLIER_DATA = False
 
 class EllipseCorrector:
     @staticmethod
-    def correct_distortion(sequence: Sequence, goodsamples = 1000, maxstepsfactor = 40, alpha = 1, samplesize = 10, symmetricLengh = False) -> Sequence:
+    def correct_distortion(sequence: Sequence, goodsamples = 1000, maxstepsfactor = 40, alpha = 1, samplesize = 10, symmetricLengh = False, inliers_threshold = 0.05) -> Sequence:
         newprediction, f = sequence.get(format=OrderedDict([(NpDimension.FRAME_ITER, None),
                                                             (NpDimension.KEYPOINT_ITER, None),
                                                             (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z))]))
@@ -84,7 +84,7 @@ class EllipseCorrector:
         ransac_steps = goodsamples
         sample_ranges = [list(np.array(range(k.shape[0]))[~np.isnan(k).any(axis=1)]) for k in bonevect.swapaxes(0, 2)]
         # inliers_threshold = 0.0005
-        inliers_threshold = 0.05
+
 
         samples = list()
         for _ in range(ransac_steps * maxstepsfactor):
@@ -124,26 +124,65 @@ class EllipseCorrector:
                 print(err);
                 continue
 
-            abs_error = np.abs(data.reshape(-1, data.shape[2]) @ s.value - e.reshape(-1, 1)).squeeze()
-            abs_error = abs_error.reshape(data.shape[0], data.shape[1])
+
+
+            s_ = s.value.squeeze()
+            s_[5:] = np.abs(s_[5:])
+            Aa = (1 - s_[0] - s_[1]) / 3  # (1-U-V/3)
+            Ab = Aa + s_[1]  # (Aa + V)
+            Ac = Aa + s_[0]  # (Aa + U)
+            Ad = -4 * s_[2] / 6  # (-4 * M / 6)
+            Ae = -2 * s_[3] / 6  # (-2 * N / 6)
+            Af = -2 * s_[4] / 6  # (-2 * P / 6)
+
+            A = np.array([[Aa, Ad, Ae],
+                          [Ad, Ab, Af],
+                          [Ae, Af, Ac]])
+
+            A_ = np.linalg.eig(A)
+            dnpr = (bonevect / np.sqrt(s_[None, 5:])).reshape(3,-1)
+            dnpr = np.linalg.inv(A_[1]) @ dnpr
+            sv = np.sqrt(np.abs(A_[0][:, None]))
+            sv /= np.mean(sv)
+            dnpr *= sv
+            dnpr = A_[1] @ dnpr
+            dnpr = dnpr.reshape(bonevect.shape)
+            abs_error = np.abs(1-np.linalg.norm(dnpr,axis=0))
+            #abs_error = abs_error.reshape(bonevect.shape[1], bonevect.shape[2])
+            #abs_error = abs_error.transpose().reshape(-1)
+
+
             #abs_error /= np.sqrt(abs(s.value[5:]))
-            abs_error /= abs(s.value[5:])
-            abs_error = abs_error.reshape(-1)
+            #abs_error /= abs(s.value[5:])
+            #abs_error = abs_error.reshape(-1)
 
             # fittness = 1-(AbsError/inliers_threshold)
             # fittness[fittness<0] = 0
 
-            new_ransac_inliers = (abs_error < inliers_threshold) * bonevectaccuracies.transpose().reshape(-1)
+
+
+            new_ransac_inliers = (abs_error < inliers_threshold) * bonevectaccuracies
 
             if (KEEP_ALL_RANSAC_INLIER_DATA):  # keep all ransac
                 ransac_inliers.append(new_ransac_inliers)
             count_steps += 1
 
-
-
-            goodsample_tresh = new_ransac_inliers.shape[0] * 0.25
+            goodsample_tresh = np.sqrt(new_ransac_inliers.shape[0] * 0.25) * new_ransac_inliers.shape[1]
             # ransacInliers.append(fittness)
-            thissum = np.nansum(new_ransac_inliers)
+            #thissum = np.nansum(new_ransac_inliers)
+            thissum = np.nansum(np.sqrt(np.nansum(new_ransac_inliers,axis=0)))
+
+            '''
+            percentile = np.percentile(abs_error,50)
+            new_ransac_inliers = (abs_error < percentile) * 1
+            if (KEEP_ALL_RANSAC_INLIER_DATA):  # keep all ransac
+                ransac_inliers.append(new_ransac_inliers)
+            count_steps += 1
+
+            thissum = 1/percentile
+            goodsample_tresh = 1/inliers_threshold
+            '''
+
 
             if thissum > maxsum:
                 maxsum = thissum
@@ -162,20 +201,21 @@ class EllipseCorrector:
         #amax = np.argmax(np.sum(np.array(ransac_inliers), axis=1))
         #data_ = data.reshape(-1, data.shape[2])[ransac_inliers[amax] > 1e-6]
         #e_ = e.reshape(-1, 1)[ransac_inliers[amax] > 1e-6]
-        data_ = data.reshape(-1, data.shape[2])[maxdata > 1e-6]
-        e_ = e.reshape(-1, 1)[maxdata > 1e-6]
+        data_ = data[(maxdata > 1e-6).transpose()]
+        e_ = e[(maxdata > 1e-6).transpose()]
 
         result = cp.Problem(cp.Minimize(cp.sum(cp.abs(data_ @ s - e_))), constraints=constraint).solve()
 
         # sample ellipse
 
-        s = s.value.squeeze()
-        Aa = (1 - s[0] - s[1]) / 3 #(1-U-V/3)
-        Ab = Aa + s[1]             #(Aa + V)
-        Ac = Aa + s[0]             #(Aa + U)
-        Ad = -4 * s[2] / 6         #(-4 * M / 6)
-        Ae = -2 * s[3] / 6         #(-2 * N / 6)
-        Af = -2 * s[4] / 6         #(-2 * P / 6)
+        s_ = s.value.squeeze()
+        s_[5:] = np.abs(s_[5:])
+        Aa = (1 - s_[0] - s_[1]) / 3 #(1-U-V/3)
+        Ab = Aa + s_[1]             #(Aa + V)
+        Ac = Aa + s_[0]             #(Aa + U)
+        Ad = -4 * s_[2] / 6         #(-4 * M / 6)
+        Ae = -2 * s_[3] / 6         #(-2 * N / 6)
+        Af = -2 * s_[4] / 6         #(-2 * P / 6)
 
         A = np.array([[Aa, Ad, Ae],
                       [Ad, Ab, Af],
@@ -205,6 +245,8 @@ class EllipseCorrector:
 
 
         if(VISUALIZE):
+            shadesOfBlue = ["#00FFFF", "#0088FF","#0044FF","#00BBFF", "#0000FF", "#33FFFF", "#3388FF","#3344FF","#33BBFF", "#3300FF", "#33FFCC", "#3388CC","#3344CC","#33BBCC", "#3300CC","#33FFCC", "#3388CC","#3344CC","#33BBCC", "#3300CC"]
+
             randomData = np.random.random((2, 2000)) * 16 - 8
             a__ = A[2, 2]
             b__ = randomData[0] * (A[0, 2] + A[2, 0]) + randomData[1] * (A[1, 2] + A[2, 1])
@@ -224,22 +266,25 @@ class EllipseCorrector:
             ax.set_xlim3d([-0.2, 0.2])
             ax.set_ylim3d([-0.2, 0.2])
             ax.set_zlim3d([-0.2, 0.2])
-            x = (bonevect[0, :, :] / np.sqrt(s[None, 5:])).flatten()
-            y = (bonevect[1, :, :] / np.sqrt(s[None, 5:])).flatten()
-            z = (bonevect[2, :, :] / np.sqrt(s[None, 5:])).flatten()
-            # x_ = bonevect_[0,:,2]
-            # y_ = bonevect_[1,:,2]
-            # z_ = bonevect_[2,:,2]
+
+            bv = bonevect
+
+            for i in range(bv.shape[2]):
+                x = (bv[0, :, i] / np.sqrt(s_[None, 5+i])).flatten()
+                y = (bv[1, :, i] / np.sqrt(s_[None, 5+i])).flatten()
+                z = (bv[2, :, i] / np.sqrt(s_[None, 5+i])).flatten()
+                ax.plot(x, y, z, linestyle="", marker="o", color=shadesOfBlue[i],markersize=2)
+
             x__ = ellipse[0]
             y__ = ellipse[1]
             z__ = ellipse[2]
-            data, = ax.plot(x, y, z, linestyle="", marker="o", color="blue")
+            #data, = ax.plot(x, y, z, linestyle="", marker="o", color="blue")
             # data2, = ax.plot(x_,y_,z_, linestyle="", marker = "o", color="red")
-            data3, = ax.plot(x__, y__, z__, linestyle="", marker="o", color="yellow")
+            data3, = ax.plot(x__, y__, z__, linestyle="", marker="o", color="red",markersize=2)
             plt.show(block=False)
             fig.canvas.draw()
 
         npr_ =  np.stack([npr_[..., 0], npr_[..., 1], npr_[..., 2], accuracies], axis=2)
         return Sequence(sequence.cameras,npr_,OrderedDict([(NpDimension.FRAME_ITER, f[NpDimension.FRAME_ITER]),
                                                            (NpDimension.KEYPOINT_ITER, f[NpDimension.KEYPOINT_ITER]),
-                                                           (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z, KpDim.accuracy))])), A
+                                                           (NpDimension.KP_DATA, (KpDim.x, KpDim.y, KpDim.z, KpDim.accuracy))])), A, maxdata

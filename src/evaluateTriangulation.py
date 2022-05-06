@@ -28,10 +28,14 @@ import easygui
 
 styles = \
 '''
-.subtotal{ background-color:#ddd; }
-.subtotal td{ outline: 1px solid #ddd; }
-.total{ background-color:#bbb; }
-.total td{ outline: 1px solid #bbb; }
+.subsubtotal{ background-color:#ddd; }
+.subsubtotal td{ outline: 1px solid #ddd; }
+.subtotal{ background-color:#bbb; }
+.subtotal td{ outline: 1px solid #bbb; }
+.subtotal2{ background-color:#aaa; }
+.subtotal2 td{ outline: 1px solid #aaa; }
+.total{ background-color:#888; }
+.total td{ outline: 1px solid #888; }
 .actioncol, .subjectcol{font-weight:bold;}
 thead{ position: sticky; top: 0;}
 thead tr{background-color:#ddd;}
@@ -291,6 +295,7 @@ def main(conf):
     mydata["TOTAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in keys])
     mydata["TOTAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in keys])
     mydata["TOTAL"]["actions"] = defaultdict(lambda:list())
+    mydata["TOTAL"]["runs"] = defaultdict(lambda:defaultdict(lambda:list()))
 
     mydata["TOTALVAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in set(["S9", "S11"]).intersection(keys)])
     mydata["TOTALVAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in set(["S9","S11"]).intersection(keys)])
@@ -324,9 +329,12 @@ def main(conf):
         items.sort(key=lambda x: x)
         for action in items:
             gtaction = action.split("_")[0]
-            mydata["TOTAL"]["actions"][gtaction].append((subject_, action))
+            actiontype = gtaction.split(" ")[0]
+            mydata["TOTAL"]["actions"][actiontype].append((subject_, action))
             if subject_ in ["S9","S11"]:
-                mydata["TOTALVAL"]["actions"][gtaction].append((subject_, action))
+                mydata["TOTALVAL"]["actions"][actiontype].append((subject_, action))
+            mydata["TOTAL"]["runs"][subject_][gtaction].append((subject_, action))
+
 
             mydata[subject_][action]["pck30"] = mydata[subject_][action]["ck30sum"] / mydata[subject_][action]["totalpoints"]
             mydata[subject_][action]["pck50"] = mydata[subject_][action]["ck50sum"] / mydata[subject_][action]["totalpoints"]
@@ -350,6 +358,14 @@ def main(conf):
         mydata["TOTALVAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in set(["S9", "S11"]).intersection(keys)])
 
 
+    for subject_ in mydata["TOTAL"]["runs"].keys():
+        for actions_ in mydata["TOTAL"]["runs"][subject_].keys():
+            ga = mydata["TOTAL"]["runs"][subject_][actions_]
+            pck_table += generateHtmlDataRow({
+                key: np.mean([mydata[s][a][key] for s, a in ga]) for key in
+                ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
+                 "p_pck100", "p_pck150", "p_pck250"]
+            }, subject_, actions_ + " (all)", "subsubtotal")
 
     for subject_ in keys:
         pck_table += generateHtmlDataRow(mydata[subject_]["TOTAL"], subject_, "TOTAL","subtotal")
@@ -358,7 +374,7 @@ def main(conf):
         ga = mydata["TOTAL"]["actions"][gtactions]
         pck_table += generateHtmlDataRow({
             key: np.mean([mydata[s][a][key] for s,a in ga]) for key in ["mpjpe","pmpjpe","trajectory","pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]
-        }, "ALL", gtactions, "subtotal")
+        }, "ALL", gtactions, "subtotal2")
 
     pck_table += generateHtmlDataRow(mydata["TOTALVAL"], "S9,S11", "TOTAL", "total")
     pck_table += generateHtmlDataRow(mydata["TOTAL"], "ALL", "TOTAL", "total")

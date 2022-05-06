@@ -247,14 +247,15 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
     bestP = None
     bestP_ = None
     iterationCounter = 0
-    while iterellipse>0: # iterellipse is a const! Thus this is either always true or always false. See also breaking conditions below
-        corrected_sequence3d, A = EllipseCorrector.correct_distortion(
+    while True:#iterellipse>0: # iterellipse is a const! Thus this is either always true or always false. See also breaking conditions below
+        corrected_sequence3d, A, inliers = EllipseCorrector.correct_distortion(
             sequence3d,
             goodsamples=config.getint("Ellipse","goodsamples"),
             maxstepsfactor=config.getint("Ellipse","maxfactor"),
             alpha=config.getfloat("Ellipse","alpha"),
             samplesize=config.getint("Ellipse","samplesize"),
-            symmetricLengh=config.getboolean("Ellipse","symmetricLength")
+            symmetricLengh=config.getboolean("Ellipse","symmetricLength"),
+            inliers_threshold=config.getfloat("Ellipse","inlierThreshold"),
         )
 
         evaluatedA = np.sum(np.square((A / np.sum(A) * 3) - np.eye(3)))
@@ -263,11 +264,12 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
         if evaluatedA < config.getfloat("Ellipse", "breakingcondition"):
             bestA = evaluatedA
             print("IT'S A BALL! breaking condition met")
-            sequence3d = corrected_sequence3d
+            #sequence3d = corrected_sequence3d
             break
         if bestA > evaluatedA:
             bestA = evaluatedA
-            bestSequence3D = corrected_sequence3d
+            #bestSequence3D = corrected_sequence3d
+            bestSequence3D = sequence3d
             bestP = P
             bestP_ = P_
         if iterationCounter >= iterellipse:
@@ -275,6 +277,9 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
                 sequence3d = bestSequence3D
                 P = bestP
                 P_ = bestP_
+            else:
+                # sequence3d = corrected_sequence3d
+                bestA = evaluatedA
             break
         iterationCounter += 1
 
@@ -288,7 +293,7 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
                                            (NpDimension.KEYPOINT_ITER, nprFormat[NpDimension.KEYPOINT_ITER]),
                                            (NpDimension.KP_DATA, KpDim.accuracy)])
 
-        kp, _ = sequence2d.get(format=[(NpDimension.CAM_ITER, [cam1_idx,cam2_idx]),
+        kp, f = sequence2d.get(format=[(NpDimension.CAM_ITER, [cam1_idx,cam2_idx]),
                                   (NpDimension.FRAME_ITER, nprFormat[NpDimension.FRAME_ITER]),
                                   (NpDimension.KEYPOINT_ITER, nprFormat[NpDimension.KEYPOINT_ITER]),
                                   (NpDimension.KP_DATA, (KpDim.x, KpDim.y))])
@@ -303,27 +308,32 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
 
         #nanmask = np.isnan(nprNp.reshape(-1,3)[accNp.reshape(-1)>0.7]).any(axis=1)
 
-        mask = accNp.reshape(-1)>0.7
-        mask &= ~np.isnan(nprNp.reshape(-1,3)).any(axis=1)
-        R1 = cv2.solvePnPRansac(objectPoints = nprNp.reshape(-1,3)[mask],
-                                imagePoints = kp[0].reshape(-1,2)[mask],
+        #mask = accNp.reshape(-1)>0.7
+        #mask &= ~np.isnan(nprNp.reshape(-1,3)).any(axis=1)
+
+        bm = Bones.getBonemat(f[NpDimension.KEYPOINT_ITER])
+        mask = (inliers @ np.abs(bm[0])) > 1e-6
+        R1 = cv2.solvePnPRansac(objectPoints = nprNp[mask],
+                                imagePoints = kp[0][mask],
                                 cameraMatrix = c1.intrinsicMatrix,
                                 distCoeffs=(0, 0, 0, 0),
                                 rvec = (cv2.Rodrigues(src=c1.rotationMatrix.copy())[0]),
                                 tvec = c1.translation.reshape((1,3)).copy(),
                                 useExtrinsicGuess=True,
-                                reprojectionError=0.05,
-                                iterationsCount = 10000)
+                                confidence = config.getfloat("Ellipse","PnPconfidence"),#0.99
+                                reprojectionError=config.getfloat("Ellipse","PnPreprojectionError"),#0.05,
+                                iterationsCount = config.getint("Ellipse","PnPiterations")) # 10000
 
-        R2 = cv2.solvePnPRansac(objectPoints=nprNp.reshape(-1, 3)[mask],
-                                imagePoints=kp[1].reshape(-1,2)[mask],
+        R2 = cv2.solvePnPRansac(objectPoints=nprNp[mask],
+                                imagePoints=kp[1][mask],
                                 cameraMatrix=c2.intrinsicMatrix,
                                 distCoeffs=(0, 0, 0, 0),
                                 rvec=(cv2.Rodrigues(src=c2.rotationMatrix.copy())[0]),
                                 tvec=c2.translation.reshape((1,3)).copy(),
                                 useExtrinsicGuess=True,
-                                reprojectionError=0.05,
-                                iterationsCount = 10000)
+                                confidence = config.getfloat("Ellipse","PnPconfidence"),#0.99
+                                reprojectionError=config.getfloat("Ellipse","PnPreprojectionError"),
+                                iterationsCount = config.getint("Ellipse","PnPiterations")) # 10000
 
         #shape = nprNp.shape
 
@@ -592,7 +602,7 @@ def main(argv):
         poseset = "2D"
         input_2d_dataset = CPN2D(config,human36mGT)
 
-    subjects_conf = config["exec"]["Subjects"].split(" ")
+    subjects_conf = [a.strip() for a in config["exec"]["Subjects"].split(",")]
     subjects = input_2d_dataset.subject_list
     subjects = list(set(subjects).intersection(set(subjects_conf)))
     '''
@@ -673,7 +683,9 @@ def main(argv):
     #subjects = ["S8",]
     for s in sorted(subjects):
         actionlist = input_2d_dataset.action_list(s)
-        #actionlist = ["Directions",]
+        if "Actions" in config["exec"].keys():
+            actions_conf = [a.strip() for a in config["exec"]["Actions"].split(",")]
+            actionlist = list(set(actionlist).intersection(set(actions_conf)))
         for k in sorted(actionlist):
             #estimatorInput.append([kp1_[s][k], kp2_[s][k], gt_[s][k], c1[s], c2[s], k, s, acc1mul2[s][k],acc1[s][k],acc2[s][k]])
             estimatorInput.append([s,k,input_2d_dataset,cam1_idx,cam2_idx,human36mGT,outpath])
