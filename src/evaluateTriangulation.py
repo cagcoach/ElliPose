@@ -287,19 +287,20 @@ def main(conf):
         with Pool(24) as p:
             mydata[subject_] = defaultdict(lambda: dict(), **dict(zip(items,p.map(process,items))))
 
-        mydata[subject_]["TOTAL"]["trajectory"] = np.mean([mydata[subject_][a]["trajectory"] for a in items])
-        mydata[subject_]["TOTAL"]["mpjpe"] = np.mean([mydata[subject_][a]["mpjpe"] for a in items])
-        mydata[subject_]["TOTAL"]["pmpjpe"] = np.mean([mydata[subject_][a]["pmpjpe"] for a in items])
+        #mydata[subject_]["TOTAL"]["trajectory"] = np.mean([mydata[subject_][a]["trajectory"] for a in items])
+        #mydata[subject_]["TOTAL"]["mpjpe"] = np.mean([mydata[subject_][a]["mpjpe"] for a in items])
+        #mydata[subject_]["TOTAL"]["pmpjpe"] = np.mean([mydata[subject_][a]["pmpjpe"] for a in items])
 
-    mydata["TOTAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in keys])
-    mydata["TOTAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in keys])
-    mydata["TOTAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in keys])
+    #mydata["TOTAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in keys])
+    #mydata["TOTAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in keys])
+    #mydata["TOTAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in keys])
     mydata["TOTAL"]["actions"] = defaultdict(lambda:list())
     mydata["TOTAL"]["runs"] = defaultdict(lambda:defaultdict(lambda:list()))
+    mydata["TOTAL"]["runsdict"] = defaultdict(lambda: defaultdict(lambda: list()))
 
-    mydata["TOTALVAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in set(["S9", "S11"]).intersection(keys)])
-    mydata["TOTALVAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in set(["S9","S11"]).intersection(keys)])
-    mydata["TOTALVAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in set(["S9","S11"]).intersection(keys)])
+    #mydata["TOTALVAL"]["trajectory"] = np.mean([mydata[s]["TOTAL"]["trajectory"] for s in set(["S9", "S11"]).intersection(keys)])
+    #mydata["TOTALVAL"]["mpjpe"] = np.mean([mydata[s]["TOTAL"]["mpjpe"] for s in set(["S9","S11"]).intersection(keys)])
+    #mydata["TOTALVAL"]["pmpjpe"] = np.mean([mydata[s]["TOTAL"]["pmpjpe"] for s in set(["S9","S11"]).intersection(keys)])
     mydata["TOTALVAL"]["actions"] = defaultdict(lambda:list())
 
     tot = defaultdict(lambda: 0)
@@ -353,19 +354,28 @@ def main(conf):
         for k in ["pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50", "p_pck100", "p_pck150", "p_pck250"]:
             mydata[subject_]["TOTAL"][k] = np.mean([mydata[subject_][a][k] for a in items])
 
-    for k in ["pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]:
-        mydata["TOTAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in keys])
-        mydata["TOTALVAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in set(["S9", "S11"]).intersection(keys)])
-
+    mydata[subject_]["TOTAL"] = defaultdict(lambda: 0)
 
     for subject_ in mydata["TOTAL"]["runs"].keys():
         for actions_ in mydata["TOTAL"]["runs"][subject_].keys():
             ga = mydata["TOTAL"]["runs"][subject_][actions_]
-            pck_table += generateHtmlDataRow({
+            thisdict = {
                 key: np.mean([mydata[s][a][key] for s, a in ga]) for key in
                 ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
                  "p_pck100", "p_pck150", "p_pck250"]
-            }, subject_, actions_ + " (all)", "subsubtotal")
+            }
+            mydata["TOTAL"]["runsdict"][subject_][actions_] = thisdict
+            pck_table += generateHtmlDataRow(thisdict, subject_, actions_ + " (all)", "subsubtotal")
+
+    for subject_ in mydata["TOTAL"]["runsdict"].keys():
+        actions_ = mydata["TOTAL"]["runsdict"][subject_].keys()
+        mydata[subject_]["TOTAL"] = {
+            key: np.mean([mydata["TOTAL"]["runsdict"][subject_][a][key] for a in actions_]) for key in
+            ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
+             "p_pck100", "p_pck150", "p_pck250"]
+        }
+
+
 
     for subject_ in keys:
         pck_table += generateHtmlDataRow(mydata[subject_]["TOTAL"], subject_, "TOTAL","subtotal")
@@ -376,20 +386,32 @@ def main(conf):
             key: np.mean([mydata[s][a][key] for s,a in ga]) for key in ["mpjpe","pmpjpe","trajectory","pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]
         }, "ALL", gtactions, "subtotal2")
 
-    pck_table += generateHtmlDataRow(mydata["TOTALVAL"], "S9,S11", "TOTAL", "total")
+    for k in ["pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]:
+        mydata["TOTAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in keys])
+        #mydata["TOTALVAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in set(["S9", "S11"]).intersection(keys)])
+
+    ga = keys
+    mydata["TOTAL"] = {
+        key: np.mean([mydata[s]["TOTAL"][key] for s in ga]) for key in
+        ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
+         "p_pck100", "p_pck150", "p_pck250"]
+    }
+
+    #pck_table += generateHtmlDataRow(mydata["TOTALVAL"], "S9,S11", "TOTAL", "total")
     pck_table += generateHtmlDataRow(mydata["TOTAL"], "ALL", "TOTAL", "total")
 
 
     pck_table += "</tbody>"
-    latex1 = "<textarea readonly>S9, S11&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(mydata["TOTALVAL"]["mpjpe"],
-        mydata["TOTALVAL"]["pmpjpe"],
-        mydata["TOTALVAL"]["pck50"] * 100,
-        mydata["TOTALVAL"]["pck100"] * 100,
-        mydata["TOTALVAL"]["pck150"] * 100,
-        mydata["TOTALVAL"]["p_pck50"] * 100,
-        mydata["TOTALVAL"]["p_pck100"] * 100,
-        mydata["TOTALVAL"]["p_pck150"] * 100,
-    )
+    #latex1 = "<textarea readonly>S9, S11&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(mydata["TOTALVAL"]["mpjpe"],
+    #    mydata["TOTALVAL"]["pmpjpe"],
+    #    mydata["TOTALVAL"]["pck50"] * 100,
+    #    mydata["TOTALVAL"]["pck100"] * 100,
+    #    mydata["TOTALVAL"]["pck150"] * 100,
+    #    mydata["TOTALVAL"]["p_pck50"] * 100,
+    #    mydata["TOTALVAL"]["p_pck100"] * 100,
+    #    mydata["TOTALVAL"]["p_pck150"] * 100,
+    #)
+    latex1 = ""
     latex2 = "<textarea readonly>Full&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(
         mydata["TOTAL"]["mpjpe"],
         mydata["TOTAL"]["pmpjpe"],

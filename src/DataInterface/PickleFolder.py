@@ -1,10 +1,11 @@
 import glob
 import os
-import pickle
+import compress_pickle as pickle
 import re
 from functools import lru_cache
 from typing import List, Dict
 import numpy as np
+import bz2
 
 from src.DataInterface.DataInterface import DataInterface
 from src.DataInterface.MultiViewFrame import MultiViewFrame
@@ -14,8 +15,13 @@ from src.Skeleton.Keypoint import Keypoint
 
 class PickleFolder(DataInterface):
     def __init__(self, config: dict, datakey: None):
-        pattern = re.compile(r'^(S[0-9]*)_(.*).pkl$')
-        self.pickleFiles = [f for f in glob.glob(os.path.join(config.get("exec", "outpath"), "*.pkl"))]
+        pattern = re.compile(r'^(S[0-9]*)_(.*)\.pkl(\.gz|\.bz|\.lzma|\.zip)?$')
+        pklpath = os.path.join(config["exec"]["outpath"], "*.pkl")
+        self.pickleFiles = [f for f in glob.glob(pklpath)]
+        self.pickleFiles.extend([f for f in glob.glob(pklpath + ".gz")])
+        self.pickleFiles.extend([f for f in glob.glob(pklpath + ".bz")])
+        self.pickleFiles.extend([f for f in glob.glob(pklpath + ".lzma")])
+        self.pickleFiles.extend([f for f in glob.glob(pklpath + ".zip")])
         self._dataPath = dict()
         self.datakey = datakey
 
@@ -44,7 +50,8 @@ class PickleFolder(DataInterface):
 
     #@lru_cache(maxsize=10)
     def get_sequence(self, subject: str, action: str) -> Sequence:
-        with open(self._dataPath[subject][action], "rb") as input_file:
+        p = self._dataPath[subject][action]
+        with open(p, "rb") as input_file:
             datadict = pickle.load(input_file)
         if self.datakey is None:
             return datadict
@@ -57,6 +64,7 @@ class PickleFolder(DataInterface):
         return self.get_sequence(subject, action).npdimensions[NpDimension.KEYPOINT_ITER]
 
     def get_bestA_for_Sequence(self, subject: str, action: str):
-        with open(self._dataPath[subject][action], "rb") as input_file:
+        p = self._dataPath[subject][action]
+        with open(p, "rb") as input_file:
             datadict = pickle.load(input_file)
         return datadict["bestA"] if "bestA" in datadict else np.nan;

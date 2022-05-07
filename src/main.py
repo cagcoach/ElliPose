@@ -1,4 +1,6 @@
-import pickle
+from pickle import HIGHEST_PROTOCOL
+import compress_pickle as pickle
+
 from collections import OrderedDict
 from copy import deepcopy, copy
 from shutil import copyfile
@@ -186,27 +188,30 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
     outpath = var[6]
 
     picklepath = os.path.join(outpath, "{}_{}{}.pkl".format(s, k, filenameappend))
+    picklepaths = [picklepath + a for a in ["", ".gz",".bz",".lzma",".zip"]]
+    picklepath = picklepath + ".lzma"
     try:
-        if(os.path.exists(picklepath)):
-            print(s + " " + k + " already exists: loading from file " + picklepath)
-            with open(picklepath, "rb") as input_file:
-                datadict = pickle.load(input_file)
-            #print("loaded")
-            #{"sequence3D":sequence3d, "P":P, "P_":P_, "pred":pred,"newpred":newpred, "action":k, "subject":s, "bonemat": bonemat, "bones": bones}
+        for pp in picklepaths:
+            if(os.path.exists(pp)):
+                print(s + " " + k + " already exists: loading from file " + pp)
+                with open(pp, "rb") as input_file:
+                    datadict = pickle.load(input_file)
+                #print("loaded")
+                #{"sequence3D":sequence3d, "P":P, "P_":P_, "pred":pred,"newpred":newpred, "action":k, "subject":s, "bonemat": bonemat, "bones": bones}
 
-            if not "aligned3d" in datadict:
-                datadict["aligned3d"] = Sequence(datadict["sequence3D"].cameras,
-                                                 datadict["newpred"],
-                                                 OrderedDict([(NpDimension.FRAME_ITER,datadict["sequence3D"].npdimensions[NpDimension.FRAME_ITER]),
-                                                              (NpDimension.KEYPOINT_ITER,datadict["sequence3D"].npdimensions[NpDimension.KEYPOINT_ITER]),
-                                                              (NpDimension.KP_DATA,(KpDim.x, KpDim.y, KpDim.z)),
-                                                              ]))
-                with open(picklepath, 'wb') as f:
-                    pickle.dump(datadict, f, protocol=pickle.HIGHEST_PROTOCOL)
+                if not "aligned3d" in datadict:
+                    datadict["aligned3d"] = Sequence(datadict["sequence3D"].cameras,
+                                                     datadict["newpred"],
+                                                     OrderedDict([(NpDimension.FRAME_ITER,datadict["sequence3D"].npdimensions[NpDimension.FRAME_ITER]),
+                                                                  (NpDimension.KEYPOINT_ITER,datadict["sequence3D"].npdimensions[NpDimension.KEYPOINT_ITER]),
+                                                                  (NpDimension.KP_DATA,(KpDim.x, KpDim.y, KpDim.z)),
+                                                                  ]))
+                    with open(pp, 'wb') as f:
+                        pickle.dump(datadict, f)
 
-            return datadict["sequence3D"], datadict["aligned3d"], datadict["P"], datadict["P_"]
-            #return sequence3d, P, P_
-            #return pred, newpred, gt, k, s, P, P_
+                return datadict["sequence3D"], datadict["aligned3d"], datadict["P"], datadict["P_"]
+                #return sequence3d, P, P_
+                #return pred, newpred, gt, k, s, P, P_
     except:
         pass
     try:
@@ -529,7 +534,7 @@ def estimateForKeypoint(var,iterellipse,iterbone,config,filenameappend) -> (Sequ
                     "bonemat": bonemat,
                     "bones": bones,
                     "bestA" : bestA,
-                    }, f, protocol=pickle.HIGHEST_PROTOCOL)
+                    }, f)
 
     return sequence3d, aligned3d, P, P_
     # return pred, newpred, gt, k, s, P, P_
