@@ -553,13 +553,16 @@ def main(argv):
     if "--continue" in argv[1:]:
         argv.remove("--continue")
         cont = True
-    if len(argv) > 2:
-        print("Wrong number of arguments")
-        exit()
+    #if len(argv) > 2:
+    #    print("Wrong number of arguments")
+    #    exit()
     if len(argv) == 1:
         import easygui
         argv.append(easygui.fileopenbox(default=os.path.join(os.path.dirname(sys.argv[0]), "*.conf"),filetypes=[["*.conf", "Configuration File"]], multiple=True))
-    config.read(argv[1])
+    ret = config.read(argv[1:])
+    if ret != argv[1:]:
+        print("Failed reading config files: \n" + "\n".join(list(set(argv[1:]).difference(set(ret)))))
+        exit()
 
     if cont:
         outpath = config["exec"]["outpath"]
