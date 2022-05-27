@@ -710,6 +710,8 @@ def main(argv):
             for ei in estimatorInput:
                 if config.getint("exec","repeat") > 1:
                     fa = "_Run{}".format(i+1)
+                else:
+                    fa = ""
                 estimatorOutput.append(estimateForKeypoint(ei,iterellipse = config.getint("exec","iterEllipse"),iterbone = config.getint("exec","iterBone"),config = config,filenameappend=fa))
 
     print("Save to File")

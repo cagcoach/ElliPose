@@ -6,7 +6,7 @@ import sys
 
 import numpy as np
 import torch
-
+import re
 import matplotlib.pyplot as plt
 import matplotlib
 from cv2 import applyColorMap, COLORMAP_JET as COLORMAP
@@ -51,6 +51,8 @@ for colorID in range(256):
     key = ".b" + str(colorID)
     styles+= key + "{" + "background-color:#{:06x};color:#{};text-align:right;".format( hexbgcolor, textcolor) + "}\n"
 
+def flatten(t):
+    return [item for sublist in t for item in sublist]
 
 def numbercellstyle(val, min_, max_):
     changedval = (val - min_)/(max_-min_) * 127
@@ -124,23 +126,23 @@ def generateHtmlDataRow(datadict: dict, subject:str, action:str, htmlclass: str 
     htmlstr += "<td class=\"actioncol\">{}</td>".format(action)
     #mpjpe
     htmlstr += "<td class=\"{}\">{:.2f} mm</td>".format(
-                     numbercellstyle(datadict["mpjpe"], 0, 100),
+                     numbercellstyle(datadict["mpjpe"], 10, 80),
                      datadict["mpjpe"],
                  )
     #pmpjpe
     htmlstr += "<td class=\"{}\">{:.2f} mm</td>".format(
-        numbercellstyle(datadict["pmpjpe"], 0, 80),
+        numbercellstyle(datadict["pmpjpe"], 10, 60),
         datadict["pmpjpe"]
     )
     #trajectory
     htmlstr += "<td class=\"{}\">{:.2f} mm</td>".format(
-        numbercellstyle(datadict["trajectory"], 0, 100),
+        numbercellstyle(datadict["trajectory"], 10, 100),
         datadict["trajectory"]
     )
     #bestA
     bA = datadict["bestA"] if "bestA" in datadict else np.nan
     htmlstr += "<td class=\"{}\">{:.4f}</td>".format(
-        numbercellstyle(np.log10(bA), np.log10(max(0.0001,refA)), 0),
+        numbercellstyle(np.log10(bA), np.log10(0.01), 0),
         bA
     )
     #frames
@@ -174,6 +176,7 @@ def generateHtmlDataRow(datadict: dict, subject:str, action:str, htmlclass: str 
     return htmlstr
 
 def main(conf):
+    filterCorrupted = True
     matplotlib.use("TkAgg")
 
     config = ConfigParser()
@@ -211,7 +214,8 @@ def main(conf):
 
     mydata = defaultdict(lambda:defaultdict(lambda:dict()))
 
-    keys = a.subject_list
+    #keys = a.subject_list
+    keys = ["S9", "S11"]
     keys.sort(key=lambda x: int(x[1:]))
     for subject_ in keys:
         p_ck30[subject_] = dict()
@@ -226,7 +230,9 @@ def main(conf):
 
         mydata[subject_] = defaultdict(lambda:dict())
 
-        items = a.action_list(subject_)
+        items = a.action_list(subject_,filterCorrupted=True)
+
+
         items.sort(key=lambda x: x)
 
 
@@ -305,7 +311,8 @@ def main(conf):
 
     tot = defaultdict(lambda: 0)
     cnt = defaultdict(lambda: 0)
-    keys = list(a.subject_list)
+    #keys = list(a.subject_list)
+    keys = ["S9", "S11"]
     keys.sort(key=lambda x: int(x[1:]))
     pck_table = "<thead>" \
                 "<tr>" \
@@ -326,7 +333,7 @@ def main(conf):
                 "</thead>" \
                 "<tbody>"
     for subject_ in keys:
-        items = list(a.action_list(subject_))
+        items = list(a.action_list(subject_,filterCorrupted=True))
         items.sort(key=lambda x: x)
         for action in items:
             gtaction = action.split("_")[0]
@@ -380,19 +387,34 @@ def main(conf):
     for subject_ in keys:
         pck_table += generateHtmlDataRow(mydata[subject_]["TOTAL"], subject_, "TOTAL","subtotal")
 
+    actionResults = dict()
+
     for gtactions in mydata["TOTAL"]["actions"].keys():
         ga = mydata["TOTAL"]["actions"][gtactions]
-        pck_table += generateHtmlDataRow({
-            key: np.mean([mydata[s][a][key] for s,a in ga]) for key in ["mpjpe","pmpjpe","trajectory","pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]
-        }, "ALL", gtactions, "subtotal2")
+        actionResults[gtactions] = {
+            key: np.mean([mydata[s][a][key] for s, a in ga]) for key in
+            ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
+             "p_pck100", "p_pck150", "p_pck250"]
+        }
+        pck_table += generateHtmlDataRow(actionResults[gtactions], "ALL", gtactions, "subtotal2")
+
+
 
     for k in ["pck30","pck50","pck100","pck150","pck250","p_pck30","p_pck50","p_pck100","p_pck150","p_pck250"]:
         mydata["TOTAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in keys])
         #mydata["TOTALVAL"][k] = np.mean([mydata[s]["TOTAL"][k] for s in set(["S9", "S11"]).intersection(keys)])
 
     ga = keys
+    '''
     mydata["TOTAL"] = {
         key: np.mean([mydata[s]["TOTAL"][key] for s in ga]) for key in
+        ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
+         "p_pck100", "p_pck150", "p_pck250"]
+        
+    }
+    '''
+    mydata["TOTAL"] = {
+        key: np.mean([ mydata[s][a][key] for s,a in flatten(mydata["TOTAL"]["actions"].values())]) for key in
         ["mpjpe", "pmpjpe", "trajectory", "pck30", "pck50", "pck100", "pck150", "pck250", "p_pck30", "p_pck50",
          "p_pck100", "p_pck150", "p_pck250"]
     }
@@ -402,17 +424,8 @@ def main(conf):
 
 
     pck_table += "</tbody>"
-    #latex1 = "<textarea readonly>S9, S11&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(mydata["TOTALVAL"]["mpjpe"],
-    #    mydata["TOTALVAL"]["pmpjpe"],
-    #    mydata["TOTALVAL"]["pck50"] * 100,
-    #    mydata["TOTALVAL"]["pck100"] * 100,
-    #    mydata["TOTALVAL"]["pck150"] * 100,
-    #    mydata["TOTALVAL"]["p_pck50"] * 100,
-    #    mydata["TOTALVAL"]["p_pck100"] * 100,
-    #    mydata["TOTALVAL"]["p_pck150"] * 100,
-    #)
-    latex1 = ""
-    latex2 = "<textarea readonly>Full&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\</textarea>".format(
+
+    latex = "TOTAL: <textarea readonly>{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}&{:.1f}\\\\%{}</textarea></br>".format(
         mydata["TOTAL"]["mpjpe"],
         mydata["TOTAL"]["pmpjpe"],
         mydata["TOTAL"]["pck50"] * 100,
@@ -421,8 +434,10 @@ def main(conf):
         mydata["TOTAL"]["p_pck50"] * 100,
         mydata["TOTAL"]["p_pck100"] * 100,
         mydata["TOTAL"]["p_pck150"] * 100,
+        config.get("exec","outpath")
         )
-    htmlbody += "<h2>Results</h2><table>{}</table>{}{}".format(pck_table,latex1,latex2)
+    latex += "MPJPEs <textarea readonly>"+"&".join(["{:.1f}".format(d["mpjpe"]) for d in actionResults.values()])+"\\\\%{}</textarea>".format(config.get("exec","outpath"))
+    htmlbody += "<h2>Results</h2><table>{}</table>{}".format(pck_table,latex)
 
     configTable = "<h2>Full Config</h2>"
     for sec in config.sections():

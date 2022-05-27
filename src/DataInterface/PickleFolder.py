@@ -45,8 +45,14 @@ class PickleFolder(DataInterface):
     def subject_list(self) -> List[str]:
         return list(self._dataPath.keys())
 
-    def action_list(self, subject: str) -> List[str]:
-        return list(self._dataPath[subject].keys())
+    def action_list(self, subject: str, filterCorrupted = False) -> List[str]:
+        items = list(self._dataPath[subject].keys())
+
+        if filterCorrupted and subject == "S9":
+            r = re.compile("^(Greeting|SittingDown 1|Waiting 1)(_Run[0-9]*)?$")
+            items = list(filter(lambda i: not r.match(i), items))
+
+        return items
 
     #@lru_cache(maxsize=10)
     def get_sequence(self, subject: str, action: str) -> Sequence:
