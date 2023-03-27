@@ -40,3 +40,9 @@ or by directly providing a config file
 ```
 python evaluateTriangulation.py path/to/my/result/config.conf
 ```
+
+# Publication
+
+Christian Grund, Julian Tanke, and Juergen Gall. "ElliPose: Stereoscopic 3D Human Pose Estimation by Fitting Ellipsoids." Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision. 2023.
+
+https://openaccess.thecvf.com/content/WACV2023/html/Grund_ElliPose_Stereoscopic_3D_Human_Pose_Estimation_by_Fitting_Ellipsoids_WACV_2023_paper.html
